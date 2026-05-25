@@ -411,6 +411,120 @@ ${info.difficulty == 'FÁCIL' ? '→ Puedes subir hasta 100 bots sin problema' :
   '→ Usa máximo 10-20 bots con proxies'}''';
     }
 
+    if (ql.contains('donde') && (ql.contains('proxy') || ql.contains('proxies') || ql.contains('encuentro'))) {
+      return 'Fuentes GRATUITAS de proxies:\n\n'
+        '🌐 GITHUB (actualizadas diario):\n'
+        '→ TheSpeedX/PROXY-List\n'
+        '   HTTP, SOCKS4, SOCKS5\n\n'
+        '→ proxifly/free-proxy-list\n'
+        '   Múltiples protocolos\n\n'
+        '→ MuRongPIG/Proxy-Master\n'
+        '   HTTP y SOCKS5\n\n'
+        '→ monosans/proxy-list\n'
+        '   Verificados automáticamente\n\n'
+        '→ clarketm/proxy-list\n'
+        '   Lista clásica confiable\n\n'
+        '🔧 WEBS:\n'
+        '→ proxy-list.download\n'
+        '→ free-proxy-list.net\n'
+        '→ hidemy.name/en/proxy-list\n'
+        '→ spys.one/en/\n\n'
+        '💡 Descarga el .txt y cárgalo\n'
+        'en JsusIPTV Scanner tab PROXY';
+    }
+
+    if (ql.contains('socks') || ql.contains('tipo de proxy') || ql.contains('diferencia') || ql.contains('http proxy')) {
+      return 'Tipos de proxies:\n\n'
+        '🔵 HTTP:\n'
+        '→ Solo tráfico web básico\n'
+        '→ Más rápido pero menos seguro\n'
+        '→ Para servidores FÁCIL\n\n'
+        '🟡 SOCKS4:\n'
+        '→ Más versátil que HTTP\n'
+        '→ Soporta TCP\n'
+        '→ Para servidores MEDIO\n\n'
+        '🟢 SOCKS5:\n'
+        '→ El mejor para IPTV scanning\n'
+        '→ UDP + autenticación\n'
+        '→ Para servidores DIFÍCIL\n\n'
+        '🔴 RESIDENCIAL:\n'
+        '→ IPs de usuarios reales\n'
+        '→ Casi imposible de detectar\n'
+        '→ De pago — para MUY DIFÍCIL\n\n'
+        'Para \${info.host} (\${info.difficulty}):\n'
+        '\${info.difficulty == "FÁCIL" ? "→ HTTP es suficiente" : info.difficulty == "MEDIO" ? "→ SOCKS4/5 recomendado" : "→ SOCKS5 o residencial obligatorio"}';
+    }
+
+    if (ql.contains('vpn') || ql.contains('anonimo') || ql.contains('anónimo') || ql.contains('detectar')) {
+      return 'Cómo evitar ser detectado:\n\n'
+        '🛡 TÉCNICAS:\n'
+        '→ Rotar proxies cada 30-50 requests\n'
+        '→ User-Agents aleatorios\n'
+        '→ Delay entre peticiones (5-50ms)\n'
+        '→ Max 1000 CPM en protegidos\n\n'
+        '🔒 VPNs GRATUITAS:\n'
+        '→ ProtonVPN — sin límite datos\n'
+        '→ Windscribe — 10GB/mes\n'
+        '→ Tunnelbear — 500MB/mes\n'
+        '→ hide.me — 10GB/mes\n\n'
+        '⚠ SEÑALES DE BAN:\n'
+        '→ Muchos ERRORs seguidos\n'
+        '→ Respuestas 429 o 403\n'
+        '→ Timeout repentino\n\n'
+        '\${info.host}: \${info.proxyRecommendation}';
+    }
+
+    if (ql.contains('m3u') || ql.contains('reproducir') || ql.contains('ver') || ql.contains('reproductor')) {
+      return 'Reproductores recomendados:\n\n'
+        '📺 TiviMate (Android TV) ⭐⭐⭐⭐⭐\n'
+        '→ El mejor para IPTV\n'
+        '→ EPG, grabación, grupos\n\n'
+        '📱 IPTV Smarters Pro ⭐⭐⭐⭐\n'
+        '→ Android/iOS/PC\n'
+        '→ Soporte Xtream Codes directo\n\n'
+        '🖥 VLC ⭐⭐⭐\n'
+        '→ Gratis todas las plataformas\n'
+        '→ Abre M3U directamente\n\n'
+        '🎬 Kodi + PVR IPTV ⭐⭐⭐⭐\n'
+        '→ Muy personalizable\n'
+        '→ Gratis y open source\n\n'
+        '💡 Con las cuentas del scanner:\n'
+        'Copia el M3U y ábrelo en TiviMate';
+    }
+
+    if (ql.contains('timeout') || ql.contains('configurar') || ql.contains('ajustar') || ql.contains('parametros')) {
+      final rec = info.ping <= 0 ? 10 : info.ping < 100 ? 8 : info.ping < 300 ? 10 : info.ping < 600 ? 15 : 20;
+      final bots = info.ping < 100 ? '50-100' : info.ping < 300 ? '20-50' : '10-20';
+      return 'Configuración óptima para \${info.host}:\n\n'
+        '⚙ PARÁMETROS:\n'
+        '→ Timeout: \${rec}s\n'
+        '→ Bots: \$bots\n'
+        '→ Delay: \${info.difficulty == "FÁCIL" ? "5ms" : info.difficulty == "MEDIO" ? "20ms" : "50ms"}\n'
+        '→ Proxies: \${info.difficulty == "FÁCIL" ? "No necesario" : "Recomendado"}\n\n'
+        '📊 BASADO EN:\n'
+        '→ Ping: \${info.ping > 0 ? "\${info.ping}ms" : "No medido"}\n'
+        '→ Dificultad: \${info.difficulty}\n\n'
+        '💡 Si obtienes muchos ERROR:\n'
+        '→ Reduce bots a la mitad\n'
+        '→ Aumenta timeout 5s más\n'
+        '→ Agrega proxies rotativos';
+    }
+
+    if (ql.contains('puerto') || ql.contains('port')) {
+      return 'Puertos comunes en servidores IPTV:\n\n'
+        '🔌 MÁS USADOS:\n'
+        '→ :80    — HTTP estándar\n'
+        '→ :443   — HTTPS\n'
+        '→ :8080  — Alternativo HTTP\n'
+        '→ :8880  — Xtream Codes clásico\n'
+        '→ :2082  — Panel cPanel\n'
+        '→ :25461 — Alternativo popular\n'
+        '→ :1935  — RTMP streaming\n\n'
+        '\${info.host} usa puerto: \${info.port}\n\n'
+        '💡 Algunos servidores tienen el mismo\n'
+        'contenido en múltiples puertos.';
+    }
+
     // Default response
     return '''Sobre ${info.host}:
 
