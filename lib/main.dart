@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:convert';
 import 'dart:io';
+import 'package:http/http.dart' as http;
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -49,13 +50,16 @@ class CheckResult {
 
 Future<String?> _get(String url) async {
   try {
-    final req = await _client.getUrl(Uri.parse(url));
-    req.headers.set('User-Agent', _ua());
-    req.headers.set('Accept', '*/*');
-    final res = await req.close().timeout(const Duration(seconds: 12));
+    final res = await http.get(Uri.parse(url), headers: {
+      'User-Agent': _ua(),
+      'Accept': '*/*',
+      'Connection': 'keep-alive',
+    }).timeout(const Duration(seconds: 15));
     if (res.statusCode >= 500) return null;
-    return await res.transform(utf8.decoder).join();
-  } catch (_) { return null; }
+    return res.body;
+  } catch (e) {
+    return null;
+  }
 }
 
 Future<CheckResult> checkUrl(String raw) async {
