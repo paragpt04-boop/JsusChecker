@@ -12,6 +12,7 @@ dependencies:
   share_plus: ^9.0.0
   path_provider: ^2.1.0
   shared_preferences: ^2.2.0
+  device_info_plus: ^9.0.0
 
 flutter:
   uses-material-design: true
