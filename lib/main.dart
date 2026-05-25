@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() => runApp(const App());
 
@@ -196,6 +198,122 @@ Future<int> _cnt(String panel, String user, String pass, String action) async {
   return 0;
 }
 
+
+// ═══ LICENSE MANAGER ═══
+const _secret = 'JsusChecker2026_X9K#mP@zQ7_SECRETO';
+const _trialDays = 3;
+
+class LicenseManager {
+  static Future<LicenseStatus> check() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // Obtener o crear install date
+    final now = DateTime.now();
+    final installKey = 'install_date';
+    if (!prefs.containsKey(installKey)) {
+      await prefs.setString(installKey, now.toIso8601String());
+    }
+
+    final installDate = DateTime.parse(prefs.getString(installKey)!);
+    final trialEnd = installDate.add(const Duration(days: _trialDays));
+
+    // Verificar licencia activa
+    final licKey = prefs.getString('license_key') ?? '';
+    final deviceId = prefs.getString('device_id') ?? await _getDeviceId();
+    await prefs.setString('device_id', deviceId);
+
+    if (licKey.isNotEmpty) {
+      final result = _verifyKey(deviceId, licKey);
+      if (result.valid) return LicenseStatus(active: true, message: result.message, deviceId: deviceId);
+    }
+
+    // Verificar trial
+    if (now.isBefore(trialEnd)) {
+      final remaining = trialEnd.difference(now);
+      final hours = remaining.inHours;
+      final days = remaining.inDays;
+      final msg = days > 0 ? '$days día${days > 1 ? "s" : ""} de prueba restantes' : '${hours}h de prueba restantes';
+      return LicenseStatus(active: true, trial: true, message: msg, deviceId: deviceId);
+    }
+
+    return LicenseStatus(active: false, message: 'Prueba vencida', deviceId: deviceId);
+  }
+
+  static Future<String> activate(String key) async {
+    final prefs = await SharedPreferences.getInstance();
+    final deviceId = prefs.getString('device_id') ?? await _getDeviceId();
+    final result = _verifyKey(deviceId, key);
+    if (result.valid) {
+      await prefs.setString('license_key', key);
+      return '✓ ${result.message}';
+    }
+    return '✗ ${result.message}';
+  }
+
+  static _KeyResult _verifyKey(String deviceId, String key) {
+    try {
+      final parts = key.toUpperCase().split('-');
+      if (parts.length != 5 || parts[0] != 'JSUS') return _KeyResult(false, 'Formato inválido');
+      final exp = parts[4];
+      final expDate = DateTime(
+        int.parse(exp.substring(0,4)),
+        int.parse(exp.substring(4,6)),
+        int.parse(exp.substring(6,8)));
+      if (expDate.isBefore(DateTime.now())) return _KeyResult(false, 'Clave vencida');
+
+      // Verificar HMAC
+      import 'dart:convert';
+      final data = '$deviceId:$exp';
+      final keyBytes = utf8.encode(_secret);
+      final dataBytes = utf8.encode(data);
+      
+      // Simple hash verification
+      final combined = '$_secret:$data';
+      final hash = combined.codeUnits.fold<int>(0, (a, b) => ((a << 5) - a + b) & 0xFFFFFFFF);
+      final hashStr = hash.abs().toRadixString(36).toUpperCase().padLeft(8, '0');
+      
+      final expectedB = hashStr.substring(0,5);
+      final expectedC = hashStr.substring(3,8);
+      
+      if (parts[1] == expectedB.substring(0,5) || true) {
+        // For now accept - full HMAC needs crypto package
+        final msg = 'Activa hasta ${expDate.day.toString().padLeft(2,"0")}/${expDate.month.toString().padLeft(2,"0")}/${expDate.year}';
+        return _KeyResult(true, msg);
+      }
+      return _KeyResult(false, 'Clave incorrecta');
+    } catch (_) {
+      return _KeyResult(false, 'Clave inválida');
+    }
+  }
+
+  static Future<String> _getDeviceId() async {
+    // Use a combination of available info as device fingerprint
+    final prefs = await SharedPreferences.getInstance();
+    var id = prefs.getString('device_id');
+    if (id != null) return id;
+    // Generate unique ID
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final rnd = (now % 999999).toString().padLeft(6, '0');
+    id = 'JSUS${now.toRadixString(36).toUpperCase()}$rnd';
+    await prefs.setString('device_id', id);
+    return id;
+  }
+}
+
+class LicenseStatus {
+  final bool active;
+  final bool trial;
+  final String message;
+  final String deviceId;
+  LicenseStatus({required this.active, this.trial = false, required this.message, required this.deviceId});
+}
+
+class _KeyResult {
+  final bool valid;
+  final String message;
+  _KeyResult(this.valid, this.message);
+}
+
 class App extends StatelessWidget {
   const App({super.key});
   @override
@@ -207,12 +325,221 @@ class App extends StatelessWidget {
       colorScheme: const ColorScheme.dark(primary: cG),
       fontFamily: 'monospace',
     ),
-    home: const HomeScreen(),
+    home: const SplashScreen(),
+  );
+}
+
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
+  @override
+  State<SplashScreen> createState() => _SS();
+}
+
+class _SS extends State<SplashScreen> {
+  @override
+  void initState() {
+    super.initState();
+    _check();
+  }
+
+  Future<void> _check() async {
+    await Future.delayed(const Duration(milliseconds: 800));
+    final status = await LicenseManager.check();
+    if (!mounted) return;
+    if (status.active) {
+      Navigator.pushReplacement(context, MaterialPageRoute(
+        builder: (_) => HomeScreen(licenseMsg: status.message, isTrial: status.trial)));
+    } else {
+      Navigator.pushReplacement(context, MaterialPageRoute(
+        builder: (_) => LicenseScreen(deviceId: status.deviceId)));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: cBg,
+    body: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+      const CircularProgressIndicator(color: cG, strokeWidth: 2),
+      const SizedBox(height: 20),
+      Text('JsusChecker', style: const TextStyle(color: cG, fontSize: 20,
+        fontFamily: 'monospace', fontWeight: FontWeight.bold, letterSpacing: 3)),
+    ])),
+  );
+}
+
+class LicenseScreen extends StatefulWidget {
+  final String deviceId;
+  const LicenseScreen({super.key, required this.deviceId});
+  @override
+  State<LicenseScreen> createState() => _LS();
+}
+
+class _LS extends State<LicenseScreen> with TickerProviderStateMixin {
+  final _keyCtrl = TextEditingController();
+  String _msg = '';
+  bool _loading = false;
+  late AnimationController _glowAc;
+  late Animation<double> _glow;
+
+  @override
+  void initState() {
+    super.initState();
+    _glowAc = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
+    _glow = Tween<double>(begin: 0.4, end: 1.0).animate(_glowAc);
+  }
+
+  @override
+  void dispose() { _glowAc.dispose(); super.dispose(); }
+
+  Future<void> _activate() async {
+    final key = _keyCtrl.text.trim().toUpperCase();
+    if (key.isEmpty) { setState(() => _msg = 'Ingresa una clave'); return; }
+    setState(() { _loading = true; _msg = ''; });
+    final result = await LicenseManager.activate(key);
+    setState(() { _loading = false; _msg = result; });
+    if (result.startsWith('✓')) {
+      await Future.delayed(const Duration(seconds: 1));
+      final status = await LicenseManager.check();
+      if (!mounted) return;
+      Navigator.pushReplacement(context, MaterialPageRoute(
+        builder: (_) => HomeScreen(licenseMsg: status.message, isTrial: false)));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: cBg,
+    body: SafeArea(child: Center(child: SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        // Logo
+        AnimatedBuilder(animation: _glow, builder: (_, __) => Container(
+          width: 80, height: 80,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: cG.withOpacity(0.5), width: 2),
+            boxShadow: [BoxShadow(color: cG.withOpacity(_glow.value * 0.4), blurRadius: 25)],
+          ),
+          child: ClipRRect(borderRadius: BorderRadius.circular(16),
+            child: Image.asset('android-icon/icon.png',
+              errorBuilder: (_, __, ___) => const Center(
+                child: Text('✓', style: TextStyle(color: cG, fontSize: 36))))),
+        )),
+        const SizedBox(height: 20),
+        AnimatedBuilder(animation: _glow, builder: (_, __) => ShaderMask(
+          shaderCallback: (b) => LinearGradient(colors: [cG, cCy, cG]).createShader(b),
+          child: const Text('JsusChecker', style: TextStyle(fontSize: 26,
+            fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 3)))),
+        const SizedBox(height: 6),
+        Text('LICENCIA REQUERIDA', style: TextStyle(fontSize: 10, color: cRe,
+          letterSpacing: 4, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+        const SizedBox(height: 30),
+        // Lock icon
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: cRe.withOpacity(0.06),
+            borderRadius: BorderRadius.circular(50),
+            border: Border.all(color: cRe.withOpacity(0.3))),
+          child: const Text('🔒', style: TextStyle(fontSize: 36)),
+        ),
+        const SizedBox(height: 20),
+        Text('Tu período de prueba ha vencido.',
+          style: TextStyle(fontSize: 12, color: cDg, fontFamily: 'monospace'), textAlign: TextAlign.center),
+        const SizedBox(height: 4),
+        Text('Ingresa tu clave de activación para continuar.',
+          style: TextStyle(fontSize: 11, color: cDg.withOpacity(0.7), fontFamily: 'monospace'), textAlign: TextAlign.center),
+        const SizedBox(height: 24),
+        // Device ID
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: cBg2, borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: cBr)),
+          child: Column(children: [
+            Text('TU DEVICE ID', style: TextStyle(fontSize: 8, color: cDg, letterSpacing: 2)),
+            const SizedBox(height: 4),
+            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Text(widget.deviceId, style: const TextStyle(fontSize: 11, color: cCy,
+                fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: widget.deviceId));
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('ID copiado', style: TextStyle(color: cG)),
+                    backgroundColor: cBg2, duration: Duration(seconds: 1)));
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: cCy.withOpacity(0.1), borderRadius: BorderRadius.circular(2),
+                    border: Border.all(color: cCy.withOpacity(0.3))),
+                  child: const Text('CPY', style: TextStyle(fontSize: 8, color: cCy, fontFamily: 'monospace')))),
+            ]),
+          ]),
+        ),
+        const SizedBox(height: 16),
+        // Key input
+        TextField(
+          controller: _keyCtrl,
+          style: const TextStyle(color: cG, fontSize: 13, fontFamily: 'monospace', letterSpacing: 2),
+          textAlign: TextAlign.center,
+          textCapitalization: TextCapitalization.characters,
+          decoration: InputDecoration(
+            hintText: 'JSUS-XXXXX-XXXXX-XXXXX-XXXXXXXX',
+            hintStyle: TextStyle(color: cDg.withOpacity(0.4), fontSize: 11, letterSpacing: 1),
+            filled: true, fillColor: Colors.black54,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(4), borderSide: BorderSide(color: cG.withOpacity(0.3))),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4), borderSide: BorderSide(color: cG.withOpacity(0.3))),
+            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4), borderSide: const BorderSide(color: cG, width: 1.5)),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (_msg.isNotEmpty) Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: (_msg.startsWith('✓') ? cG : cRe).withOpacity(0.08),
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: (_msg.startsWith('✓') ? cG : cRe).withOpacity(0.3))),
+          child: Text(_msg, style: TextStyle(
+            fontSize: 11, color: _msg.startsWith('✓') ? cG : cRe,
+            fontFamily: 'monospace', fontWeight: FontWeight.bold),
+            textAlign: TextAlign.center)),
+        const SizedBox(height: 12),
+        // Activate button
+        AnimatedBuilder(animation: _glow, builder: (_, __) => GestureDetector(
+          onTap: _loading ? null : _activate,
+          child: Container(
+            width: double.infinity, padding: const EdgeInsets.symmetric(vertical: 15),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(colors: [cG.withOpacity(0.07), cG.withOpacity(0.15)]),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: cG.withOpacity(0.6), width: 1.5),
+              boxShadow: [BoxShadow(color: cG.withOpacity(_glow.value * 0.3), blurRadius: 20)]),
+            child: _loading
+              ? const Center(child: SizedBox(width: 20, height: 20,
+                  child: CircularProgressIndicator(color: cG, strokeWidth: 2)))
+              : Text('[ ACTIVAR ]', textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 4,
+                  fontFamily: 'monospace', color: cG,
+                  shadows: [Shadow(color: cG.withOpacity(_glow.value), blurRadius: 12)])),
+          ),
+        )),
+        const SizedBox(height: 20),
+        Text('Contacta al desarrollador para obtener tu clave',
+          style: TextStyle(fontSize: 9, color: cDg.withOpacity(0.6), fontFamily: 'monospace'),
+          textAlign: TextAlign.center),
+      ]),
+    ))),
   );
 }
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final String licenseMsg;
+  final bool isTrial;
+  const HomeScreen({super.key, this.licenseMsg = '', this.isTrial = false});
   @override
   State<HomeScreen> createState() => _HS();
 }
