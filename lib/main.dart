@@ -262,7 +262,6 @@ class LicenseManager {
       if (expDate.isBefore(DateTime.now())) return _KeyResult(false, 'Clave vencida');
 
       // Verificar HMAC
-      import 'dart:convert';
       final data = '$deviceId:$exp';
       final keyBytes = utf8.encode(_secret);
       final dataBytes = utf8.encode(data);
