@@ -120,7 +120,7 @@ Future<void> checkEntry(HitEntry e) async {
     final url = '${e.panel}/player_api.php?username=${Uri.encodeComponent(e.username)}&password=${Uri.encodeComponent(e.password)}';
     final req = await _client.getUrl(Uri.parse(url));
     req.headers.set('User-Agent', _ua());
-    final res = await req.close().timeout(const Duration(seconds: 10));
+    final res = await req.close().timeout(const Duration(seconds: 20));
     final body = await res.transform(utf8.decoder).join();
     
     Map<String, dynamic> data;
@@ -137,10 +137,24 @@ Future<void> checkEntry(HitEntry e) async {
     final st = ui['status']?.toString().toLowerCase().trim() ?? '';
     
     final isActive = auth == 1 || auth == '1' || auth == true ||
-      ['active','activo','enabled','premium','trial','free'].contains(st);
+      auth.toString() == '1' ||
+      ['active','activo','enabled','premium','trial','free','1','true'].contains(st);
     
-    if (!isActive || st == 'banned' || st == 'disabled') {
-      e.status = st == 'expired' || st == 'vencido' ? 'EXPIRED' : 'INVALID';
+    if (!isActive) {
+      if (st == 'expired' || st == 'vencido' || st == 'Expired') {
+        e.status = 'EXPIRED';
+      } else if (st == 'banned' || st == 'disabled') {
+        e.status = 'INVALID';
+      } else {
+        // Si tiene user_info pero auth raro, verificar expiracion
+        final ts2 = ui['exp_date'];
+        if (ts2 != null && int.tryParse(ts2.toString()) != null) {
+          final exp2 = DateTime.fromMillisecondsSinceEpoch(int.parse(ts2.toString()) * 1000);
+          e.status = exp2.isBefore(DateTime.now()) ? 'EXPIRED' : 'ACTIVE';
+        } else {
+          e.status = 'INVALID';
+        }
+      }
       e.checked = true;
       return;
     }
@@ -169,7 +183,8 @@ Future<void> checkEntry(HitEntry e) async {
     // Verify panel
     await _verifyPanel(e);
     
-  } catch (_) {
+  } catch (ex) {
+    // Si es timeout, marcar como ERROR pero con mensaje
     e.status = 'ERROR';
     e.checked = true;
   }
