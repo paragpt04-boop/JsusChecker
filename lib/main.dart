@@ -174,8 +174,13 @@ Future<CheckResult> checkUrl(String raw) async {
   r.rawUrl = raw.trim();
   try {
     final uri = Uri.parse(raw.trim());
-    final port = uri.port != 0 ? ':' + uri.port.toString() : '';
-    r.server = uri.scheme + '://' + uri.host + port;
+    // Siempre incluir el puerto si está en la URL
+    final port = (uri.port != 0 && uri.port != 80 && uri.port != 443)
+      ? ':' + uri.port.toString()
+      : (uri.port == 80 || uri.port == 443) ? '' : '';
+    // Para puertos no estandar siempre incluir
+    final portStr = uri.hasPort ? ':' + uri.port.toString() : '';
+    r.server = uri.scheme + '://' + uri.host + portStr;
     r.streamType = uri.queryParameters['type'] ?? 'm3u_plus';
     r.username = Uri.decodeComponent(uri.queryParameters['username'] ?? '');
     r.password = Uri.decodeComponent(uri.queryParameters['password'] ?? '');
