@@ -204,6 +204,9 @@ class AnalyzerScreen extends StatefulWidget {
 
 class _AS extends State<AnalyzerScreen> with TickerProviderStateMixin {
   final _ctrl = TextEditingController();
+  final _apiKeyCtrl = TextEditingController();
+  String _groqKey = '';
+  bool _useGroq = false;
   ServerInfo? _info;
   bool _loading = false;
   final _chatMessages = <Map<String, String>>[];
@@ -305,13 +308,65 @@ class _AS extends State<AnalyzerScreen> with TickerProviderStateMixin {
     });
     _chatCtrl.clear();
 
-    // Generate response based on server info
-    final response = _generateResponse(q, _info!);
-    await Future.delayed(const Duration(milliseconds: 500));
+    String response;
+    if (_useGroq && _groqKey.isNotEmpty) {
+      response = await _groqResponse(q, _info!) ?? _generateResponse(q, _info!);
+    } else {
+      await Future.delayed(const Duration(milliseconds: 400));
+      response = _generateResponse(q, _info!);
+    }
     setState(() {
       _chatMessages.add({'role': 'bot', 'text': response});
       _chatLoading = false;
     });
+  }
+
+  Future<String?> _groqResponse(String question, ServerInfo info) async {
+    try {
+      final systemPrompt = '''Eres un experto en servidores IPTV y ciberseguridad.
+Tienes acceso a esta información del servidor analizado:
+- Host: \${info.host}
+- IP: \${info.ip}
+- País: \${info.country}, Ciudad: \${info.city}
+- ISP: \${info.isp}
+- Panel: \${info.panelType}
+- Ping: \${info.ping}ms
+- Activo: \${info.isActive}
+- Dificultad escaneo: \${info.difficulty}
+- Es datacenter: \${info.isHosting}
+- Es proxy/VPN: \${info.isProxy}
+- Subdominios: \${info.subdomains.join(", ")}
+- IPs relacionadas: \${info.relatedIPs.join(", ")}
+- Recomendación proxies: \${info.proxyRecommendation}
+
+Responde de forma concisa y técnica en español.
+Usa emojis y formato legible. Max 200 palabras.''';
+
+      final body = jsonEncode({
+        'model': 'llama3-8b-8192',
+        'messages': [
+          {'role': 'system', 'content': systemPrompt},
+          ..._chatMessages.map((m) => {
+            'role': m['role'] == 'bot' ? 'assistant' : 'user',
+            'content': m['text'],
+          }),
+          {'role': 'user', 'content': question},
+        ],
+        'max_tokens': 400,
+        'temperature': 0.7,
+      });
+
+      final req = await _httpClient.postUrl(Uri.parse('https://api.groq.com/openai/v1/chat/completions'));
+      req.headers.set('Content-Type', 'application/json');
+      req.headers.set('Authorization', 'Bearer \$_groqKey');
+      req.write(body);
+      final res = await req.close().timeout(const Duration(seconds: 15));
+      final resBody = await res.transform(utf8.decoder).join();
+      final data = jsonDecode(resBody) as Map<String, dynamic>;
+      return data['choices'][0]['message']['content'] as String?;
+    } catch (e) {
+      return null;
+    }
   }
 
   String _generateResponse(String q, ServerInfo info) {
@@ -588,6 +643,20 @@ Puedes preguntarme sobre:
         Text('IPTV Server Intelligence v1.0',
           style: TextStyle(fontSize: 8, color: cDg.withOpacity(0.8), letterSpacing: 2)),
       ])),
+      GestureDetector(
+        onTap: _showGroqSetup,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+          margin: const EdgeInsets.only(right: 6),
+          decoration: BoxDecoration(
+            color: _useGroq ? cMg.withOpacity(0.1) : cBr,
+            borderRadius: BorderRadius.circular(2),
+            border: Border.all(color: _useGroq ? cMg.withOpacity(0.5) : cBr)),
+          child: Text(_useGroq ? '⚡ AI ON' : '⚡ AI',
+            style: TextStyle(fontSize: 9, color: _useGroq ? cMg : cDg,
+              fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+        ),
+      ),
       AnimatedBuilder(animation: _pulse, builder: (_, __) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
@@ -608,6 +677,46 @@ Puedes preguntarme sobre:
       )),
     ]),
   );
+
+  void _showGroqSetup() {
+    showDialog(context: context, builder: (_) => AlertDialog(
+      backgroundColor: cBg2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4), side: const BorderSide(color: cG)),
+      title: const Text('⚡ Groq AI Config', style: TextStyle(color: cG, fontFamily: 'monospace', fontSize: 14)),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        Text('Ingresa tu API Key de Groq\nconsole.groq.com',
+          style: TextStyle(color: cDg, fontSize: 11, fontFamily: 'monospace')),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _apiKeyCtrl,
+          style: const TextStyle(color: cG, fontSize: 11, fontFamily: 'monospace'),
+          obscureText: true,
+          decoration: InputDecoration(
+            hintText: 'gsk_...',
+            hintStyle: TextStyle(color: cDg.withOpacity(0.5)),
+            filled: true, fillColor: Colors.black54,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(2), borderSide: const BorderSide(color: cG)),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          ),
+        ),
+      ]),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text('CANCELAR', style: TextStyle(color: cRe, fontFamily: 'monospace'))),
+        TextButton(
+          onPressed: () {
+            setState(() {
+              _groqKey = _apiKeyCtrl.text.trim();
+              _useGroq = _groqKey.isNotEmpty;
+            });
+            Navigator.pop(context);
+            _toast(_groqKey.isNotEmpty ? '✓ Groq AI activado' : 'Key vacía');
+          },
+          child: Text('ACTIVAR', style: TextStyle(color: cG, fontFamily: 'monospace'))),
+      ],
+    ));
+  }
 
   Widget _inputBar() => Container(
     padding: const EdgeInsets.all(10),
