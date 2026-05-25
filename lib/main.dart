@@ -91,7 +91,7 @@ Future<void> _checkPanel(ServerInfo info, String url) async {
       info.panelType = si['server_protocol'] != null ? 'Xtream Codes' : 'Xtream Compatible';
       info.panelVersion = si['rtmp_port']?.toString() ?? '';
       info.timezone = si['timezone']?.toString() ?? '';
-      info.raw = si;
+      info.raw = Map<String, dynamic>.from(si);
     } catch (_) {
       if (body.contains('Xtream')) info.panelType = 'Xtream Codes';
       else if (body.contains('stalker')) info.panelType = 'Stalker Middleware';
@@ -923,7 +923,6 @@ SUBDOMINIOS: ${info.subdomains.join(', ')}''';
       border: Border.all(color: c.withOpacity(0.3))),
     child: Text(t, style: TextStyle(fontSize: 9, color: c, fontFamily: 'monospace', fontWeight: FontWeight.bold)));
 
-  void _addBotMsg(String msg) => setState(() => _chatMessages.add({'role': 'bot', 'text': msg}));
 }
 
 class _MatrixPainter extends CustomPainter {
