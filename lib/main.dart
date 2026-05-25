@@ -563,6 +563,99 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
     super.dispose();
   }
 
+  void _showActivation() {
+    final ctrl = TextEditingController();
+    String msg = '';
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          backgroundColor: cBg2,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(6),
+            side: BorderSide(color: cMg.withOpacity(0.4))),
+          title: const Text('🔑 ACTIVAR LICENCIA', style: TextStyle(color: cMg,
+            fontFamily: 'monospace', fontSize: 13, fontWeight: FontWeight.bold)),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            // Device ID
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: cBg, borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: cCy.withOpacity(0.2))),
+              child: Column(children: [
+                Text('TU DEVICE ID', style: TextStyle(fontSize: 8, color: cDg, letterSpacing: 2)),
+                const SizedBox(height: 6),
+                FutureBuilder<String>(
+                  future: SharedPreferences.getInstance().then((p) => p.getString('dev_id') ?? ''),
+                  builder: (_, snap) => snap.hasData ? Column(children: [
+                    Text(snap.data!, style: const TextStyle(fontSize: 11, color: cCy,
+                      fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 6),
+                    GestureDetector(
+                      onTap: () {
+                        Clipboard.setData(ClipboardData(text: snap.data!));
+                        Navigator.pop(ctx);
+                        _toast('Device ID copiado');
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: cCy.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(2),
+                          border: Border.all(color: cCy.withOpacity(0.3))),
+                        child: const Text('📋 COPIAR ID', style: TextStyle(fontSize: 9, color: cCy,
+                          fontFamily: 'monospace', fontWeight: FontWeight.bold)))),
+                  ]) : const SizedBox()),
+              ])),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              style: const TextStyle(color: cG, fontSize: 11, fontFamily: 'monospace'),
+              textCapitalization: TextCapitalization.characters,
+              textAlign: TextAlign.center,
+              decoration: InputDecoration(
+                hintText: 'JSUS-XXXXX-XXXXX-XXXXX-XXXXXXXX',
+                hintStyle: TextStyle(color: cDg.withOpacity(0.4), fontSize: 10),
+                filled: true, fillColor: Colors.black54,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(3),
+                  borderSide: BorderSide(color: cG.withOpacity(0.3))),
+                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(3),
+                  borderSide: BorderSide(color: cG.withOpacity(0.3))),
+                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(3),
+                  borderSide: const BorderSide(color: cG)),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10))),
+            if (msg.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(msg, style: TextStyle(fontSize: 10,
+                color: msg.startsWith('✓') ? cG : cRe,
+                fontFamily: 'monospace'), textAlign: TextAlign.center),
+            ],
+          ]),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text('CANCELAR', style: TextStyle(color: cRe, fontFamily: 'monospace'))),
+            TextButton(
+              onPressed: () async {
+                final result = await activateLicense(ctrl.text.trim());
+                setS(() => msg = result);
+                if (result.startsWith('✓')) {
+                  await Future.delayed(const Duration(seconds: 1));
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  final status = await checkLicense();
+                  if (mounted) {
+                    Navigator.pushReplacement(context, MaterialPageRoute(
+                      builder: (_) => HomeScreen(licMsg: status.msg, isTrial: status.trial)));
+                  }
+                }
+              },
+              child: Text('ACTIVAR', style: TextStyle(color: cG,
+                fontFamily: 'monospace', fontWeight: FontWeight.bold))),
+          ],
+        )));
+  }
+
   void _toast(String m) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text('> $m', style: const TextStyle(color: cG, fontFamily: 'monospace')),
@@ -611,12 +704,25 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
             colors: [Colors.transparent, cBg.withOpacity(0.75)])))),
         SafeArea(child: Column(children: [
           _hdr(),
-          if (widget.isTrial) Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-            color: cYe.withOpacity(0.08),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            color: widget.isTrial ? cYe.withOpacity(0.06) : cG.withOpacity(0.04),
             child: Row(children: [
-              const Text('⏳ ', style: TextStyle(fontSize: 12)),
-              Text(widget.licMsg, style: const TextStyle(fontSize: 10, color: cYe, fontFamily: 'monospace')),
+              Text(widget.isTrial ? '⏳ ' : '✓ ', style: const TextStyle(fontSize: 12)),
+              Expanded(child: Text(widget.licMsg.isNotEmpty ? widget.licMsg : 'Licencia activa',
+                style: TextStyle(fontSize: 10,
+                  color: widget.isTrial ? cYe : cG,
+                  fontFamily: 'monospace'))),
+              GestureDetector(
+                onTap: () => _showActivation(),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: cMg.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(2),
+                    border: Border.all(color: cMg.withOpacity(0.4))),
+                  child: const Text('🔑 ACTIVAR', style: TextStyle(fontSize: 9, color: cMg,
+                    fontFamily: 'monospace', fontWeight: FontWeight.bold)))),
             ])),
           Expanded(child: SingleChildScrollView(
             padding: const EdgeInsets.all(12),
