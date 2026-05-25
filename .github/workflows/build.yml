@@ -53,7 +53,8 @@ jobs:
 
       - name: Enable cleartext HTTP
         run: |
-          sed -i 's/<application/<application android:usesCleartextTraffic="true"/' android/app/src/main/AndroidManifest.xml
+          cp android_config/network_security_config.xml android/app/src/main/res/xml/network_security_config.xml || (mkdir -p android/app/src/main/res/xml && cp android_config/network_security_config.xml android/app/src/main/res/xml/network_security_config.xml)
+          sed -i 's/<application/<application android:usesCleartextTraffic="true" android:networkSecurityConfig="@xml\/network_security_config"/' android/app/src/main/AndroidManifest.xml
 
       - name: Install dependencies
         run: flutter pub get
