@@ -21,35 +21,122 @@ const cBg2 = Color(0xFF010C01);
 const cBr = Color(0xFF0A1F0A);
 const cOr = Color(0xFFFF6D00);
 
-// Mismo client que el scanner
 final _client = HttpClient()..badCertificateCallback = (_, __, ___) => true;
-
 const _uas = [
-  'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/120.0',
-  'VLC/3.0.20 LibVLC/3.0.20', 'TiviMate/4.7.0', 'IPTVSmarters/3.1.5',
-  'okhttp/4.12.0', 'ExoPlayer/2.19.1',
+  'Mozilla/5.0 (Linux; Android 13) Chrome/120.0',
+  'VLC/3.0.20', 'TiviMate/4.7.0', 'okhttp/4.12.0',
 ];
 String _ua() => _uas[DateTime.now().millisecondsSinceEpoch % _uas.length];
 
-class CheckResult {
-  String status = '';
-  String expira = '';
-  String creado = '';
-  String conex = '';
-  String activ = '';
-  String timezone = '';
-  String username = '';
-  String password = '';
-  String server = '';
-  String streamType = '';
-  int live = 0, vod = 0, series = 0;
-  bool panelVerified = false;
-  String rawUrl = '';
-  String m3u = '';
-  String error = '';
+// ═══ LICENSE ═══
+const _secret = 'JsusChecker2026_X9K#mP@zQ7_SECRETO';
+
+int _djbHash(String data) {
+  var h = 5381;
+  for (final ch in data.codeUnits) {
+    h = ((h << 5) + h + ch) & 0xFFFFFFFF;
+  }
+  return h;
 }
 
-// Mismo metodo que el scanner - HttpClient nativo
+String _toB36(int n) {
+  const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  var result = '';
+  var x = n.abs();
+  if (x == 0) return '0';
+  while (x > 0) {
+    result = chars[x % 36] + result;
+    x ~/= 36;
+  }
+  return result.padLeft(15, '0');
+}
+
+class LicResult {
+  final bool ok;
+  final String msg;
+  LicResult(this.ok, this.msg);
+}
+
+LicResult verifyKey(String devId, String key) {
+  try {
+    final parts = key.toUpperCase().split('-');
+    if (parts.length != 5 || parts[0] != 'JSUS') return LicResult(false, 'Formato inválido');
+    final exp = parts[4];
+    if (exp.length != 8) return LicResult(false, 'Fecha inválida');
+    final expDate = DateTime(
+      int.parse(exp.substring(0, 4)),
+      int.parse(exp.substring(4, 6)),
+      int.parse(exp.substring(6, 8)));
+    if (expDate.isBefore(DateTime.now())) return LicResult(false, 'Clave vencida');
+    final data = '$devId:$exp:$_secret';
+    final h = _djbHash(data);
+    final hStr = _toB36(h);
+    final expected = 'JSUS-${hStr.substring(0,5)}-${hStr.substring(5,10)}-${hStr.substring(10,15)}-$exp';
+    if (key.toUpperCase() == expected) {
+      final fmt = '${expDate.day.toString().padLeft(2,"0")}/${expDate.month.toString().padLeft(2,"0")}/${expDate.year}';
+      return LicResult(true, 'Activa hasta $fmt');
+    }
+    return LicResult(false, 'Clave incorrecta para este dispositivo');
+  } catch (_) {
+    return LicResult(false, 'Clave inválida');
+  }
+}
+
+class LicStatus {
+  final bool active, trial;
+  final String msg, devId;
+  LicStatus({required this.active, this.trial = false, required this.msg, required this.devId});
+}
+
+Future<LicStatus> checkLicense() async {
+  final prefs = await SharedPreferences.getInstance();
+  final now = DateTime.now();
+  if (!prefs.containsKey('inst')) {
+    await prefs.setString('inst', now.toIso8601String());
+  }
+  final inst = DateTime.parse(prefs.getString('inst')!);
+  final trialEnd = inst.add(const Duration(days: 3));
+  var devId = prefs.getString('dev_id') ?? '';
+  if (devId.isEmpty) {
+    devId = 'JSUS${now.millisecondsSinceEpoch.toRadixString(36).toUpperCase()}';
+    await prefs.setString('dev_id', devId);
+  }
+  final key = prefs.getString('lic_key') ?? '';
+  if (key.isNotEmpty) {
+    final r = verifyKey(devId, key);
+    if (r.ok) return LicStatus(active: true, msg: r.msg, devId: devId);
+    await prefs.remove('lic_key');
+  }
+  if (now.isBefore(trialEnd)) {
+    final rem = trialEnd.difference(now);
+    final d = rem.inDays;
+    final h = rem.inHours % 24;
+    final msg = d > 0 ? '$d día${d != 1 ? "s" : ""} de prueba' : '${h}h de prueba';
+    return LicStatus(active: true, trial: true, msg: msg, devId: devId);
+  }
+  return LicStatus(active: false, msg: 'Prueba vencida', devId: devId);
+}
+
+Future<String> activateLicense(String key) async {
+  final prefs = await SharedPreferences.getInstance();
+  final devId = prefs.getString('dev_id') ?? '';
+  final r = verifyKey(devId, key.trim());
+  if (r.ok) {
+    await prefs.setString('lic_key', key.trim().toUpperCase());
+    return '✓ ${r.msg}';
+  }
+  return '✗ ${r.msg}';
+}
+
+// ═══ CHECKER ═══
+class CheckResult {
+  String status = '', expira = '', creado = '', conex = '', activ = '';
+  String timezone = '', username = '', password = '', server = '', streamType = '';
+  int live = 0, vod = 0, series = 0;
+  bool panelVerified = false;
+  String rawUrl = '', m3u = '', error = '';
+}
+
 Future<Map<String, dynamic>?> _checkAcc(String panel, String user, String pass) async {
   try {
     final url = '$panel/player_api.php?username=${Uri.encodeComponent(user)}&password=${Uri.encodeComponent(pass)}';
@@ -87,7 +174,6 @@ Future<int> _cnt(String panel, String user, String pass, String action) async {
 Future<CheckResult> checkUrl(String raw) async {
   final r = CheckResult();
   r.rawUrl = raw.trim();
-
   try {
     final uri = Uri.parse(raw.trim());
     final port = uri.port != 0 ? ':${uri.port}' : '';
@@ -96,35 +182,27 @@ Future<CheckResult> checkUrl(String raw) async {
     r.username = Uri.decodeComponent(uri.queryParameters['username'] ?? '');
     r.password = Uri.decodeComponent(uri.queryParameters['password'] ?? '');
     r.m3u = raw.trim();
-
     if (r.username.isEmpty || r.password.isEmpty) {
       r.status = 'ERROR';
       r.error = 'No se encontraron credenciales en la URL';
       return r;
     }
-
-    // Usar exactamente el mismo metodo que el scanner
     final data = await _checkAcc(r.server, r.username, r.password);
-
     if (data == null) {
       r.status = 'ERROR';
       r.error = 'Sin respuesta del servidor';
       return r;
     }
-
     final ui = (data['user_info'] as Map?) ?? {};
     final si = (data['server_info'] as Map?) ?? {};
     final auth = ui['auth'];
     final st = ui['status']?.toString().toLowerCase().trim() ?? '';
     final ok = auth == 1 || auth == '1' || auth == true ||
       ['active','activo','enabled','1','premium','trial','free'].contains(st);
-
     if (!ok || st == 'banned' || st == 'disabled') {
       r.status = (st == 'expired' || st == 'vencido') ? 'VENCIDA' : 'INVÁLIDA';
       return r;
     }
-
-    // Expiry
     final ts = ui['exp_date'];
     if (ts == null || int.tryParse(ts.toString()) == null || int.parse(ts.toString()) <= 0) {
       r.expira = 'Ilimitado';
@@ -136,20 +214,15 @@ Future<CheckResult> checkUrl(String raw) async {
         return r;
       }
     }
-
-    // Created
     final tc = ui['created_at'];
     if (tc != null && int.tryParse(tc.toString()) != null && int.parse(tc.toString()) > 0) {
       final cre = DateTime.fromMillisecondsSinceEpoch(int.parse(tc.toString()) * 1000);
       r.creado = '${cre.day.toString().padLeft(2,'0')}/${cre.month.toString().padLeft(2,'0')}/${cre.year}';
     }
-
     r.status = 'ACTIVA';
     r.conex = ui['max_connections']?.toString() ?? '?';
     r.activ = ui['active_cons']?.toString() ?? '0';
     r.timezone = si['timezone']?.toString() ?? '';
-
-    // Panel verification - mismo que scanner
     final results = await Future.wait([
       _cnt(r.server, r.username, r.password, 'get_live_streams'),
       _cnt(r.server, r.username, r.password, 'get_vod_categories'),
@@ -159,7 +232,6 @@ Future<CheckResult> checkUrl(String raw) async {
     r.vod = results[1];
     r.series = results[2];
     r.panelVerified = true;
-
   } catch (e) {
     r.status = 'ERROR';
     r.error = e.toString();
@@ -167,106 +239,7 @@ Future<CheckResult> checkUrl(String raw) async {
   return r;
 }
 
-
-// ═══ SISTEMA DE LICENCIAS ═══
-const _licSecret = 'JsusChecker2026_X9K#mP@zQ7_SECRETO';
-
-class License {
-  static Future<LicStatus> check() async {
-    final prefs = await SharedPreferences.getInstance();
-    final now = DateTime.now();
-
-    // Install date
-    if (!prefs.containsKey('inst')) {
-      await prefs.setString('inst', now.toIso8601String());
-    }
-    final inst = DateTime.parse(prefs.getString('inst')!);
-    final trialEnd = inst.add(const Duration(days: 3));
-    final deviceId = await _devId(prefs);
-
-    // Check active license
-    final key = prefs.getString('lic_key') ?? '';
-    if (key.isNotEmpty) {
-      final r = _verify(deviceId, key);
-      if (r.ok) return LicStatus(active: true, msg: r.msg, devId: deviceId);
-      // Key invalid/expired - clear it
-      await prefs.remove('lic_key');
-    }
-
-    // Check trial
-    if (now.isBefore(trialEnd)) {
-      final rem = trialEnd.difference(now);
-      final d = rem.inDays;
-      final h = rem.inHours % 24;
-      final msg = d > 0 ? '$d día${d != 1 ? "s" : ""} de prueba restantes' : '${h}h de prueba restantes';
-      return LicStatus(active: true, trial: true, msg: msg, devId: deviceId);
-    }
-
-    return LicStatus(active: false, msg: 'Prueba de 3 días vencida', devId: deviceId);
-  }
-
-  static Future<String> activate(String key) async {
-    final prefs = await SharedPreferences.getInstance();
-    final devId = await _devId(prefs);
-    final r = _verify(devId, key.trim().toUpperCase());
-    if (r.ok) {
-      await prefs.setString('lic_key', key.trim().toUpperCase());
-      return '✓ ${r.msg}';
-    }
-    return '✗ ${r.msg}';
-  }
-
-  static _VResult _verify(String devId, String key) {
-    try {
-      final parts = key.split('-');
-      if (parts.length != 5 || parts[0] != 'JSUS') return _VResult(false, 'Formato inválido');
-      final exp = parts[4];
-      if (exp.length != 8) return _VResult(false, 'Fecha inválida');
-      final expDate = DateTime(
-        int.parse(exp.substring(0, 4)),
-        int.parse(exp.substring(4, 6)),
-        int.parse(exp.substring(6, 8)));
-      if (expDate.isBefore(DateTime.now())) return _VResult(false, 'Clave vencida');
-
-      // Verify hash
-      final data = '\$devId:\$exp:\$_licSecret';
-      var hash = 5381;
-      for (final ch in data.codeUnits) { hash = ((hash << 5) + hash + ch) & 0xFFFFFFFF; }
-      final hStr = hash.abs().toRadixString(36).toUpperCase().padLeft(15, '0');
-      final expected = 'JSUS-\${hStr.substring(0,5)}-\${hStr.substring(5,10)}-\${hStr.substring(10,15)}-\$exp';
-
-      if (key == expected) {
-        final fmt = '\${expDate.day.toString().padLeft(2,"0")}/\${expDate.month.toString().padLeft(2,"0")}/\${expDate.year}';
-        return _VResult(true, 'Activa hasta \$fmt');
-      }
-      return _VResult(false, 'Clave incorrecta para este dispositivo');
-    } catch (_) {
-      return _VResult(false, 'Clave inválida');
-    }
-  }
-
-  static Future<String> _devId(SharedPreferences prefs) async {
-    var id = prefs.getString('dev_id');
-    if (id != null) return id;
-    final ts = DateTime.now().millisecondsSinceEpoch;
-    id = 'JSUS\${ts.toRadixString(36).toUpperCase()}';
-    await prefs.setString('dev_id', id);
-    return id;
-  }
-}
-
-class LicStatus {
-  final bool active, trial;
-  final String msg, devId;
-  LicStatus({required this.active, this.trial = false, required this.msg, required this.devId});
-}
-
-class _VResult {
-  final bool ok;
-  final String msg;
-  _VResult(this.ok, this.msg);
-}
-
+// ═══ APP ═══
 class App extends StatelessWidget {
   const App({super.key});
   @override
@@ -282,14 +255,14 @@ class App extends StatelessWidget {
   );
 }
 
-
+// ═══ SPLASH ═══
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
   @override
   State<SplashScreen> createState() => _SpS();
 }
 
-class _SpS extends State<SplashScreen> with TickerProviderStateMixin {
+class _SpS extends State<SplashScreen> with SingleTickerProviderStateMixin {
   late AnimationController _ac;
   late Animation<double> _glow;
 
@@ -305,8 +278,8 @@ class _SpS extends State<SplashScreen> with TickerProviderStateMixin {
   void dispose() { _ac.dispose(); super.dispose(); }
 
   Future<void> _init() async {
-    await Future.delayed(const Duration(milliseconds: 1200));
-    final status = await License.check();
+    await Future.delayed(const Duration(milliseconds: 1500));
+    final status = await checkLicense();
     if (!mounted) return;
     if (status.active) {
       Navigator.pushReplacement(context, MaterialPageRoute(
@@ -327,7 +300,8 @@ class _SpS extends State<SplashScreen> with TickerProviderStateMixin {
           borderRadius: BorderRadius.circular(18),
           border: Border.all(color: cG.withOpacity(_glow.value * 0.6), width: 2),
           boxShadow: [BoxShadow(color: cG.withOpacity(_glow.value * 0.3), blurRadius: 25)]),
-        child: ClipRRect(borderRadius: BorderRadius.circular(16),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
           child: Image.asset('android-icon/icon.png',
             errorBuilder: (_, __, ___) => const Center(
               child: Text('✓', style: TextStyle(color: cG, fontSize: 36))))))),
@@ -336,12 +310,13 @@ class _SpS extends State<SplashScreen> with TickerProviderStateMixin {
         style: TextStyle(fontSize: 24, color: cG, fontFamily: 'monospace',
           fontWeight: FontWeight.bold, letterSpacing: 3,
           shadows: [Shadow(color: cG.withOpacity(_glow.value), blurRadius: 15)]))),
-      const SizedBox(height: 8),
+      const SizedBox(height: 16),
       const CircularProgressIndicator(color: cG, strokeWidth: 2),
     ])),
   );
 }
 
+// ═══ LICENSE SCREEN ═══
 class LicenseScreen extends StatefulWidget {
   final String devId;
   const LicenseScreen({super.key, required this.devId});
@@ -349,11 +324,10 @@ class LicenseScreen extends StatefulWidget {
   State<LicenseScreen> createState() => _LicS();
 }
 
-class _LicS extends State<LicenseScreen> with TickerProviderStateMixin {
+class _LicS extends State<LicenseScreen> with SingleTickerProviderStateMixin {
   final _keyCtrl = TextEditingController();
   String _msg = '';
-  bool _loading = false;
-  bool _showId = false;
+  bool _loading = false, _showId = false;
   late AnimationController _ac;
   late Animation<double> _glow;
 
@@ -371,7 +345,7 @@ class _LicS extends State<LicenseScreen> with TickerProviderStateMixin {
     final key = _keyCtrl.text.trim();
     if (key.isEmpty) { setState(() => _msg = 'Ingresa tu clave'); return; }
     setState(() { _loading = true; _msg = ''; });
-    final result = await License.activate(key);
+    final result = await activateLicense(key);
     setState(() { _loading = false; _msg = result; });
     if (result.startsWith('✓')) {
       await Future.delayed(const Duration(seconds: 1));
@@ -384,133 +358,135 @@ class _LicS extends State<LicenseScreen> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: cBg,
-    body: SafeArea(child: SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Column(children: [
-        const SizedBox(height: 20),
-        AnimatedBuilder(animation: _glow, builder: (_, __) => Container(
-          width: 80, height: 80,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: cRe.withOpacity(0.6), width: 2),
-            boxShadow: [BoxShadow(color: cRe.withOpacity(_glow.value * 0.2), blurRadius: 20)]),
-          child: ClipRRect(borderRadius: BorderRadius.circular(16),
-            child: Image.asset('android-icon/icon.png',
-              errorBuilder: (_, __, ___) => const Center(
-                child: Text('🔒', style: TextStyle(fontSize: 36))))))),
-        const SizedBox(height: 16),
-        Text('JsusChecker', style: const TextStyle(fontSize: 22, color: cG,
-          fontFamily: 'monospace', fontWeight: FontWeight.bold, letterSpacing: 3)),
-        const SizedBox(height: 4),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          decoration: BoxDecoration(
-            color: cRe.withOpacity(0.1), borderRadius: BorderRadius.circular(2),
-            border: Border.all(color: cRe.withOpacity(0.3))),
-          child: const Text('LICENCIA REQUERIDA', style: TextStyle(fontSize: 10, color: cRe,
-            letterSpacing: 3, fontFamily: 'monospace', fontWeight: FontWeight.bold))),
-        const SizedBox(height: 24),
-        Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: cBg2.withOpacity(0.9), borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: cBr)),
-          child: Column(children: [
-            Text('Tu período de prueba de 3 días ha vencido.',
-              style: TextStyle(fontSize: 11, color: cDg, fontFamily: 'monospace'),
-              textAlign: TextAlign.center),
-            const SizedBox(height: 4),
-            Text('Contacta al desarrollador para obtener tu clave de activación.',
-              style: TextStyle(fontSize: 10, color: cDg.withOpacity(0.7), fontFamily: 'monospace'),
-              textAlign: TextAlign.center),
-          ])),
-        const SizedBox(height: 16),
-        // Device ID
-        GestureDetector(
-          onTap: () => setState(() => _showId = !_showId),
-          child: Container(
+    body: SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(children: [
+          const SizedBox(height: 20),
+          AnimatedBuilder(animation: _glow, builder: (_, __) => Container(
+            width: 80, height: 80,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: cRe.withOpacity(0.5), width: 2),
+              boxShadow: [BoxShadow(color: cRe.withOpacity(_glow.value * 0.15), blurRadius: 20)]),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: Image.asset('android-icon/icon.png',
+                errorBuilder: (_, __, ___) => const Center(
+                  child: Text('🔒', style: TextStyle(fontSize: 36))))))),
+          const SizedBox(height: 16),
+          const Text('JsusChecker', style: TextStyle(fontSize: 22, color: cG,
+            fontFamily: 'monospace', fontWeight: FontWeight.bold, letterSpacing: 3)),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            decoration: BoxDecoration(
+              color: cRe.withOpacity(0.1), borderRadius: BorderRadius.circular(2),
+              border: Border.all(color: cRe.withOpacity(0.3))),
+            child: const Text('LICENCIA REQUERIDA', style: TextStyle(fontSize: 10, color: cRe,
+              letterSpacing: 3, fontFamily: 'monospace', fontWeight: FontWeight.bold))),
+          const SizedBox(height: 24),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: cBg2.withOpacity(0.9), borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: cBr)),
+            child: Column(children: [
+              Text('Tu período de prueba de 3 días ha vencido.',
+                style: TextStyle(fontSize: 11, color: cDg, fontFamily: 'monospace'),
+                textAlign: TextAlign.center),
+              const SizedBox(height: 4),
+              Text('Contacta al desarrollador para obtener tu clave.',
+                style: TextStyle(fontSize: 10, color: cDg.withOpacity(0.7), fontFamily: 'monospace'),
+                textAlign: TextAlign.center),
+            ])),
+          const SizedBox(height: 16),
+          GestureDetector(
+            onTap: () => setState(() => _showId = !_showId),
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: cBg2, borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: cCy.withOpacity(0.2))),
+              child: Column(children: [
+                Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Text('MI DEVICE ID ', style: TextStyle(fontSize: 9, color: cDg, letterSpacing: 2)),
+                  Text(_showId ? '▲' : '▼', style: const TextStyle(color: cCy, fontSize: 10)),
+                ]),
+                if (_showId) ...[
+                  const SizedBox(height: 8),
+                  Text(widget.devId, style: const TextStyle(fontSize: 12, color: cCy,
+                    fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  GestureDetector(
+                    onTap: () {
+                      Clipboard.setData(ClipboardData(text: widget.devId));
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('ID copiado', style: TextStyle(color: cG)),
+                        backgroundColor: cBg2, duration: Duration(seconds: 1)));
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: cCy.withOpacity(0.1), borderRadius: BorderRadius.circular(2),
+                        border: Border.all(color: cCy.withOpacity(0.3))),
+                      child: const Text('📋 COPIAR ID', style: TextStyle(fontSize: 10, color: cCy,
+                        fontFamily: 'monospace', fontWeight: FontWeight.bold)))),
+                ],
+              ])),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _keyCtrl,
+            style: const TextStyle(color: cG, fontSize: 12, fontFamily: 'monospace', letterSpacing: 1),
+            textAlign: TextAlign.center,
+            textCapitalization: TextCapitalization.characters,
+            decoration: InputDecoration(
+              hintText: 'JSUS-XXXXX-XXXXX-XXXXX-XXXXXXXX',
+              hintStyle: TextStyle(color: cDg.withOpacity(0.4), fontSize: 10),
+              filled: true, fillColor: Colors.black54,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
+                borderSide: BorderSide(color: cG.withOpacity(0.3))),
+              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
+                borderSide: BorderSide(color: cG.withOpacity(0.3))),
+              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
+                borderSide: const BorderSide(color: cG, width: 1.5)),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14))),
+          const SizedBox(height: 10),
+          if (_msg.isNotEmpty) Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: cBg2, borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: cCy.withOpacity(0.2))),
-            child: Column(children: [
-              Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                Text('MI DEVICE ID ', style: TextStyle(fontSize: 9, color: cDg, letterSpacing: 2)),
-                Text(_showId ? '▲' : '▼', style: const TextStyle(color: cCy, fontSize: 10)),
-              ]),
-              if (_showId) ...[
-                const SizedBox(height: 8),
-                Text(widget.devId, style: const TextStyle(fontSize: 12, color: cCy,
-                  fontFamily: 'monospace', fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                GestureDetector(
-                  onTap: () {
-                    Clipboard.setData(ClipboardData(text: widget.devId));
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                      content: Text('ID copiado', style: TextStyle(color: cG)),
-                      backgroundColor: cBg2, duration: Duration(seconds: 1)));
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: cCy.withOpacity(0.1), borderRadius: BorderRadius.circular(2),
-                      border: Border.all(color: cCy.withOpacity(0.3))),
-                    child: const Text('📋 COPIAR ID', style: TextStyle(fontSize: 10, color: cCy,
-                      fontFamily: 'monospace', fontWeight: FontWeight.bold)))),
-              ],
-            ])),
-        ),
-        const SizedBox(height: 16),
-        // Key input
-        TextField(
-          controller: _keyCtrl,
-          style: const TextStyle(color: cG, fontSize: 12, fontFamily: 'monospace', letterSpacing: 1),
-          textAlign: TextAlign.center,
-          textCapitalization: TextCapitalization.characters,
-          decoration: InputDecoration(
-            hintText: 'JSUS-XXXXX-XXXXX-XXXXX-XXXXXXXX',
-            hintStyle: TextStyle(color: cDg.withOpacity(0.4), fontSize: 10),
-            filled: true, fillColor: Colors.black54,
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
-              borderSide: BorderSide(color: cG.withOpacity(0.3))),
-            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
-              borderSide: BorderSide(color: cG.withOpacity(0.3))),
-            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
-              borderSide: const BorderSide(color: cG, width: 1.5)),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14)),
-        ),
-        const SizedBox(height: 10),
-        if (_msg.isNotEmpty) Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: (_msg.startsWith('✓') ? cG : cRe).withOpacity(0.08),
-            borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: (_msg.startsWith('✓') ? cG : cRe).withOpacity(0.3))),
-          child: Text(_msg, style: TextStyle(fontSize: 11,
-            color: _msg.startsWith('✓') ? cG : cRe,
-            fontFamily: 'monospace', fontWeight: FontWeight.bold),
-            textAlign: TextAlign.center)),
-        const SizedBox(height: 10),
-        AnimatedBuilder(animation: _glow, builder: (_, __) => GestureDetector(
-          onTap: _loading ? null : _activate,
-          child: Container(
-            width: double.infinity, padding: const EdgeInsets.symmetric(vertical: 15),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(colors: [cG.withOpacity(0.07), cG.withOpacity(0.15)]),
+              color: (_msg.startsWith('✓') ? cG : cRe).withOpacity(0.08),
               borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: cG.withOpacity(0.6), width: 1.5),
-              boxShadow: [BoxShadow(color: cG.withOpacity(_glow.value * 0.3), blurRadius: 20)]),
-            child: _loading
-              ? const Center(child: SizedBox(width: 20, height: 20,
-                  child: CircularProgressIndicator(color: cG, strokeWidth: 2)))
-              : Text('[ ACTIVAR LICENCIA ]', textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 3,
-                  fontFamily: 'monospace', color: cG,
-                  shadows: [Shadow(color: cG.withOpacity(_glow.value), blurRadius: 12)]))))),
-      ])),
+              border: Border.all(color: (_msg.startsWith('✓') ? cG : cRe).withOpacity(0.3))),
+            child: Text(_msg, style: TextStyle(fontSize: 11,
+              color: _msg.startsWith('✓') ? cG : cRe,
+              fontFamily: 'monospace', fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center)),
+          const SizedBox(height: 10),
+          AnimatedBuilder(animation: _glow, builder: (_, __) => GestureDetector(
+            onTap: _loading ? null : _activate,
+            child: Container(
+              width: double.infinity, padding: const EdgeInsets.symmetric(vertical: 15),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(colors: [cG.withOpacity(0.07), cG.withOpacity(0.15)]),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: cG.withOpacity(0.6), width: 1.5),
+                boxShadow: [BoxShadow(color: cG.withOpacity(_glow.value * 0.3), blurRadius: 20)]),
+              child: _loading
+                ? const Center(child: SizedBox(width: 20, height: 20,
+                    child: CircularProgressIndicator(color: cG, strokeWidth: 2)))
+                : Text('[ ACTIVAR LICENCIA ]', textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 3,
+                    fontFamily: 'monospace', color: cG,
+                    shadows: [Shadow(color: cG.withOpacity(_glow.value), blurRadius: 12)]))))),
+        ]),
+      ),
+    ),
   );
 }
 
+// ═══ HOME SCREEN ═══
 class HomeScreen extends StatefulWidget {
   final String licMsg;
   final bool isTrial;
@@ -578,8 +554,8 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
     content: Text('> $m', style: const TextStyle(color: cG, fontFamily: 'monospace')),
     backgroundColor: cBg2, duration: const Duration(seconds: 2),
     behavior: SnackBarBehavior.floating,
-    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(2), side: const BorderSide(color: cG)),
-  ));
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(2),
+      side: const BorderSide(color: cG))));
 
   Future<void> _check() async {
     final url = _ctrl.text.trim();
@@ -587,8 +563,7 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
     setState(() { _loading = true; _result = null; });
     final r = await checkUrl(url);
     setState(() {
-      _result = r;
-      _loading = false;
+      _result = r; _loading = false;
       if (!_history.any((h) => h.rawUrl == r.rawUrl)) {
         _history.insert(0, r);
         if (_history.length > 20) _history.removeLast();
@@ -596,7 +571,7 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
     });
   }
 
-  Color get _statusColor {
+  Color get _sc {
     switch (_result?.status) {
       case 'ACTIVA': return cG;
       case 'VENCIDA': return cOr;
@@ -611,12 +586,20 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: cBg,
     body: Stack(children: [
-      Positioned.fill(child: CustomPaint(painter: _MatrixPainter(_drops, _chars))),
+      Positioned.fill(child: CustomPaint(painter: _MP(_drops, _chars))),
       Positioned.fill(child: Container(decoration: BoxDecoration(
         gradient: RadialGradient(center: Alignment.center, radius: 1.1,
           colors: [Colors.transparent, cBg.withOpacity(0.75)])))),
       SafeArea(child: Column(children: [
-        _header(),
+        _hdr(),
+        if (widget.isTrial) Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+          color: cYe.withOpacity(0.08),
+          child: Row(children: [
+            const Text('⏳ ', style: TextStyle(fontSize: 12)),
+            Text(widget.licMsg, style: const TextStyle(fontSize: 10, color: cYe,
+              fontFamily: 'monospace')),
+          ])),
         Expanded(child: SingleChildScrollView(
           padding: const EdgeInsets.all(12),
           child: Column(children: [
@@ -625,31 +608,27 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
             if (_loading) _loadingCard(),
             if (_result != null && !_loading) _resultCard(),
             if (_history.isNotEmpty && _result == null && !_loading) _historySection(),
-          ]),
-        )),
+          ]))),
       ])),
     ]),
   );
 
-  Widget _header() => Container(
+  Widget _hdr() => Container(
     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
     decoration: BoxDecoration(
       color: cBg2.withOpacity(0.95),
-      border: Border(bottom: BorderSide(color: cG.withOpacity(0.2))),
-    ),
+      border: Border(bottom: BorderSide(color: cG.withOpacity(0.2)))),
     child: Row(children: [
       AnimatedBuilder(animation: _glow, builder: (_, __) => Container(
         width: 42, height: 42,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(10),
           border: Border.all(color: cG.withOpacity(0.4)),
-          boxShadow: [BoxShadow(color: cG.withOpacity(_glow.value * 0.3), blurRadius: 12)],
-        ),
+          boxShadow: [BoxShadow(color: cG.withOpacity(_glow.value * 0.3), blurRadius: 12)]),
         child: ClipRRect(borderRadius: BorderRadius.circular(9),
           child: Image.asset('android-icon/icon.png',
             errorBuilder: (_, __, ___) => Container(color: cBg2,
-              child: const Center(child: Text('✓', style: TextStyle(color: cG, fontSize: 20)))))),
-      )),
+              child: const Center(child: Text('✓', style: TextStyle(color: cG, fontSize: 20)))))))),
       const SizedBox(width: 12),
       Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         AnimatedBuilder(animation: _glow, builder: (_, __) => ShaderMask(
@@ -664,8 +643,7 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
         decoration: BoxDecoration(
           color: (_loading ? cYe : _result?.status == 'ACTIVA' ? cG : cDg).withOpacity(0.08),
           borderRadius: BorderRadius.circular(2),
-          border: Border.all(color: (_loading ? cYe : _result?.status == 'ACTIVA' ? cG : cDg).withOpacity(0.4)),
-        ),
+          border: Border.all(color: (_loading ? cYe : _result?.status == 'ACTIVA' ? cG : cDg).withOpacity(0.4))),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           Container(width: 6, height: 6, decoration: BoxDecoration(
             shape: BoxShape.circle,
@@ -678,25 +656,20 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
             style: TextStyle(fontSize: 9,
               color: _loading ? cYe : _result?.status == 'ACTIVA' ? cG : cDg,
               letterSpacing: 1.5, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
-        ]),
-      )),
-    ]),
-  );
+        ]))),
+    ]));
 
   Widget _urlInput() => Container(
     decoration: BoxDecoration(
-      color: cBg2.withOpacity(0.9),
-      borderRadius: BorderRadius.circular(6),
-      border: Border.all(color: cG.withOpacity(0.2)),
-    ),
+      color: cBg2.withOpacity(0.9), borderRadius: BorderRadius.circular(6),
+      border: Border.all(color: cG.withOpacity(0.2))),
     child: Column(children: [
       Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
           color: cG.withOpacity(0.05),
           borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
-          border: Border(bottom: BorderSide(color: cBr)),
-        ),
+          border: Border(bottom: BorderSide(color: cBr))),
         child: Row(children: [
           Container(width: 2, height: 12, color: cG, margin: const EdgeInsets.only(right: 8)),
           const Text('PEGAR URL', style: TextStyle(fontSize: 10, color: cDg,
@@ -713,10 +686,8 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
                 color: cCy.withOpacity(0.08), borderRadius: BorderRadius.circular(2),
                 border: Border.all(color: cCy.withOpacity(0.3))),
               child: const Text('📋 PEGAR', style: TextStyle(fontSize: 9, color: cCy,
-                fontFamily: 'monospace', fontWeight: FontWeight.bold))),
-          ),
-        ]),
-      ),
+                fontFamily: 'monospace', fontWeight: FontWeight.bold)))),
+        ])),
       Padding(padding: const EdgeInsets.all(10), child: TextField(
         controller: _ctrl,
         style: const TextStyle(color: cG, fontSize: 11, fontFamily: 'monospace'),
@@ -732,9 +703,7 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
             borderSide: BorderSide(color: cG.withOpacity(0.3))),
           focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(3),
             borderSide: const BorderSide(color: cG, width: 1.5)),
-          contentPadding: const EdgeInsets.all(10),
-        ),
-      )),
+          contentPadding: const EdgeInsets.all(10)))),
       Padding(padding: const EdgeInsets.fromLTRB(10,0,10,10), child:
         AnimatedBuilder(animation: _glow, builder: (_, __) => GestureDetector(
           onTap: _check,
@@ -748,16 +717,13 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
             child: Text('[ VERIFICAR ]', textAlign: TextAlign.center,
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold,
                 letterSpacing: 4, fontFamily: 'monospace', color: cG,
-                shadows: [Shadow(color: cG.withOpacity(_glow.value), blurRadius: 12)]))))),
-      ),
-    ]),
-  );
+                shadows: [Shadow(color: cG.withOpacity(_glow.value), blurRadius: 12)])))))),
+    ]));
 
   Widget _loadingCard() => Container(
     padding: const EdgeInsets.all(30),
     decoration: BoxDecoration(
-      color: cBg2.withOpacity(0.9),
-      borderRadius: BorderRadius.circular(6),
+      color: cBg2.withOpacity(0.9), borderRadius: BorderRadius.circular(6),
       border: Border.all(color: cBr)),
     child: Column(children: [
       AnimatedBuilder(animation: _glow, builder: (_, __) => Container(
@@ -773,16 +739,14 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
         shadows: [const Shadow(color: cG, blurRadius: 6)])),
       const SizedBox(height: 4),
       Text('Comprobando estado...', style: TextStyle(fontSize: 9, color: cDg, fontFamily: 'monospace')),
-    ]),
-  );
+    ]));
 
   Widget _resultCard() {
     final r = _result!;
-    final c = _statusColor;
+    final c = _sc;
     return Container(
       decoration: BoxDecoration(
-        color: cBg2.withOpacity(0.9),
-        borderRadius: BorderRadius.circular(6),
+        color: cBg2.withOpacity(0.9), borderRadius: BorderRadius.circular(6),
         border: Border(
           left: BorderSide(color: c, width: 4),
           top: BorderSide(color: c.withOpacity(0.3)),
@@ -814,8 +778,7 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
                 border: Border.all(color: cYe.withOpacity(0.3))),
               child: Text('📅 ${r.expira}', style: const TextStyle(fontSize: 9, color: cYe,
                 fontFamily: 'monospace', fontWeight: FontWeight.bold))),
-          ]),
-        ),
+          ])),
         Padding(padding: const EdgeInsets.all(14), child: Column(
           crossAxisAlignment: CrossAxisAlignment.start, children: [
           _sec('CREDENCIALES'),
@@ -842,11 +805,11 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
             const SizedBox(height: 10),
             _sec('CONTENIDO DEL PANEL'),
             Row(children: [
-              Expanded(child: _panelBox('📺', 'CANALES', _fn(r.live), cG)),
+              Expanded(child: _pbox('📺', 'CANALES', _fn(r.live), cG)),
               const SizedBox(width: 8),
-              Expanded(child: _panelBox('🎬', 'VOD', _fn(r.vod), cCy)),
+              Expanded(child: _pbox('🎬', 'VOD', _fn(r.vod), cCy)),
               const SizedBox(width: 8),
-              Expanded(child: _panelBox('📺', 'SERIES', _fn(r.series), cMg)),
+              Expanded(child: _pbox('📺', 'SERIES', _fn(r.series), cMg)),
             ]),
           ] else if (r.status == 'ACTIVA') ...[
             const SizedBox(height: 10),
@@ -854,15 +817,13 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
               const SizedBox(width: 12, height: 12,
                 child: CircularProgressIndicator(strokeWidth: 1.5, color: cG)),
               const SizedBox(width: 8),
-              Text('Verificando contenido del panel...',
-                style: TextStyle(fontSize: 9, color: cDg, fontFamily: 'monospace')),
+              Text('Verificando contenido...', style: TextStyle(fontSize: 9, color: cDg, fontFamily: 'monospace')),
             ]),
           ],
           const SizedBox(height: 14),
           Row(children: [
             Expanded(child: _btn('📋 COPIAR TODO', cCy, () {
-              var t = 'STATUS: ${r.status}\n'
-                'USER: ${r.username}\nPASS: ${r.password}\nSERVER: ${r.server}\n';
+              var t = 'STATUS: ${r.status}\nUSER: ${r.username}\nPASS: ${r.password}\nSERVER: ${r.server}\n';
               if (r.expira.isNotEmpty) t += 'EXP: ${r.expira}\n';
               if (r.conex.isNotEmpty) t += 'CONEX: ${r.activ}/${r.conex}\n';
               if (r.timezone.isNotEmpty) t += 'TZ: ${r.timezone}\n';
@@ -878,12 +839,9 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
             })),
           ]),
           const SizedBox(height: 6),
-          _btn('🔄 NUEVA VERIFICACIÓN', cMg, () {
-            setState(() { _result = null; _ctrl.clear(); });
-          }),
+          _btn('🔄 NUEVA VERIFICACIÓN', cMg, () => setState(() { _result = null; _ctrl.clear(); })),
         ])),
-      ]),
-    );
+      ]));
   }
 
   Widget _historySection() => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -911,28 +869,27 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
           Text(h.status, style: TextStyle(fontSize: 9,
             color: h.status == 'ACTIVA' ? cG : h.status == 'VENCIDA' ? cOr : cRe,
             fontFamily: 'monospace', fontWeight: FontWeight.bold)),
-        ]),
-      ),
-    )),
+        ]))),
   ]);
 
   Widget _sec(String t) => Padding(
     padding: const EdgeInsets.only(bottom: 6, top: 2),
     child: Row(children: [
       Container(width: 2, height: 10, color: cG, margin: const EdgeInsets.only(right: 6)),
-      Text(t, style: TextStyle(fontSize: 9, color: cDg.withOpacity(0.8), letterSpacing: 2, fontWeight: FontWeight.bold)),
-    ]));
+      Text(t, style: TextStyle(fontSize: 9, color: cDg.withOpacity(0.8),
+        letterSpacing: 2, fontWeight: FontWeight.bold))]));
 
   Widget _row(String k, String v, Color c) => Padding(
     padding: const EdgeInsets.only(bottom: 5),
     child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      SizedBox(width: 100, child: Text('$k:', style: TextStyle(fontSize: 9, color: cDg.withOpacity(0.7), fontFamily: 'monospace'))),
-      Expanded(child: Text(v, style: TextStyle(fontSize: 10, color: c, fontFamily: 'monospace',
-        fontWeight: FontWeight.w500, shadows: [Shadow(color: c.withOpacity(0.4), blurRadius: 4)]),
-        overflow: TextOverflow.ellipsis)),
-    ]));
+      SizedBox(width: 100, child: Text('$k:', style: TextStyle(fontSize: 9,
+        color: cDg.withOpacity(0.7), fontFamily: 'monospace'))),
+      Expanded(child: Text(v, style: TextStyle(fontSize: 10, color: c,
+        fontFamily: 'monospace', fontWeight: FontWeight.w500,
+        shadows: [Shadow(color: c.withOpacity(0.4), blurRadius: 4)]),
+        overflow: TextOverflow.ellipsis))]));
 
-  Widget _panelBox(String icon, String label, String val, Color c) => Container(
+  Widget _pbox(String icon, String label, String val, Color c) => Container(
     padding: const EdgeInsets.symmetric(vertical: 12),
     decoration: BoxDecoration(
       color: c.withOpacity(0.06), borderRadius: BorderRadius.circular(4),
@@ -942,8 +899,7 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
       Text(val, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: c,
         fontFamily: 'monospace', shadows: [Shadow(color: c, blurRadius: 12)])),
       const SizedBox(height: 2),
-      Text('$icon $label', style: TextStyle(fontSize: 8, color: c.withOpacity(0.7), letterSpacing: 1)),
-    ]));
+      Text('$icon $label', style: TextStyle(fontSize: 8, color: c.withOpacity(0.7), letterSpacing: 1))]));
 
   Widget _btn(String label, Color c, VoidCallback onTap) => GestureDetector(
     onTap: onTap,
@@ -961,10 +917,11 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
           shadows: [Shadow(color: c, blurRadius: 6)]))));
 }
 
-class _MatrixPainter extends CustomPainter {
+// ═══ MATRIX PAINTER ═══
+class _MP extends CustomPainter {
   final List<List<double>> drops;
   final List<List<String>> chars;
-  _MatrixPainter(this.drops, this.chars);
+  _MP(this.drops, this.chars);
   @override
   void paint(Canvas canvas, Size size) {
     for (var c = 0; c < drops.length; c++) {
@@ -980,5 +937,5 @@ class _MatrixPainter extends CustomPainter {
     }
   }
   @override
-  bool shouldRepaint(_MatrixPainter old) => true;
+  bool shouldRepaint(_MP old) => true;
 }
