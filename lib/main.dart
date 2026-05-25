@@ -5,7 +5,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-void main() => runApp(const AnalyzerApp());
+void main() => runApp(const App());
 
 const cG = Color(0xFF00FF41);
 const cCy = Color(0xFF00E5FF);
@@ -18,201 +18,210 @@ const cBg2 = Color(0xFF010C01);
 const cBr = Color(0xFF0A1F0A);
 const cOr = Color(0xFFFF6D00);
 
-final _httpClient = HttpClient()..badCertificateCallback = (_, __, ___) => true;
+final _client = HttpClient()..badCertificateCallback = (_, __, ___) => true;
 
-class ServerInfo {
-  String host = '';
-  String ip = '';
-  String country = '';
-  String city = '';
-  String isp = '';
-  String org = '';
-  bool isProxy = false;
-  bool isHosting = false;
-  int ping = -1;
-  String panelType = 'Unknown';
-  String panelVersion = '';
+const _uas = [
+  'Mozilla/5.0 (Linux; Android 13) Chrome/120.0',
+  'VLC/3.0.20', 'TiviMate/4.7.0', 'IPTVSmarters/3.1.5',
+];
+String _ua() => _uas[DateTime.now().millisecondsSinceEpoch % _uas.length];
+
+class CheckResult {
+  String status = '';
+  String expira = '';
+  String creado = '';
+  String conex = '';
+  String activ = '';
   String timezone = '';
-  List<String> subdomains = [];
-  List<String> relatedIPs = [];
-  String difficulty = '';
-  String proxyRecommendation = '';
-  bool isActive = false;
-  int port = 0;
-  Map<String, dynamic> raw = {};
+  String country = '';
+  String username = '';
+  String password = '';
+  String server = '';
+  String streamType = '';
+  int live = 0, vod = 0, series = 0;
+  bool panelVerified = false;
+  String rawUrl = '';
+  String m3u = '';
+  String error = '';
 }
 
-Future<String?> httpGet(String url, {int timeout = 8}) async {
+Future<String?> _get(String url) async {
   try {
-    final req = await _httpClient.getUrl(Uri.parse(url));
-    req.headers.set('User-Agent', 'Mozilla/5.0 (compatible; ServerAnalyzer/1.0)');
-    final res = await req.close().timeout(Duration(seconds: timeout));
+    final req = await _client.getUrl(Uri.parse(url));
+    req.headers.set('User-Agent', _ua());
+    req.headers.set('Accept', '*/*');
+    final res = await req.close().timeout(const Duration(seconds: 12));
+    if (res.statusCode >= 500) return null;
     return await res.transform(utf8.decoder).join();
   } catch (_) { return null; }
 }
 
-Future<ServerInfo> analyzeServer(String input) async {
-  final info = ServerInfo();
-  
-  // Normalize URL
-  var url = input.trim();
-  if (!url.startsWith('http')) url = 'http://$url';
-  url = url.replaceAll(RegExp(r'/+$'), '');
-  
+Future<CheckResult> checkUrl(String raw) async {
+  final result = CheckResult();
+  result.rawUrl = raw.trim();
+
   try {
-    final uri = Uri.parse(url);
-    info.host = uri.host;
-    info.port = uri.port != 0 ? uri.port : (uri.scheme == 'https' ? 443 : 80);
-  } catch (_) {
-    info.host = url;
-    return info;
-  }
+    // Parse URL
+    final uri = Uri.parse(raw.trim());
+    final base = '${uri.scheme}://${uri.host}${uri.port != 0 ? ":${uri.port}" : ""}';
 
-  // Run all checks in parallel
-  await Future.wait([
-    _checkPanel(info, url),
-    _getIPInfo(info),
-    _getSubdomains(info),
-    _measurePing(info, url),
-  ]);
+    // Detect type
+    if (raw.contains('get.php') || raw.contains('type=m3u')) {
+      // M3U format - extract credentials
+      result.username = uri.queryParameters['username'] ?? '';
+      result.password = uri.queryParameters['password'] ?? '';
+      result.server = base;
+      result.streamType = uri.queryParameters['type'] ?? 'm3u_plus';
+      result.m3u = raw;
+    } else if (raw.contains('player_api.php')) {
+      result.username = uri.queryParameters['username'] ?? '';
+      result.password = uri.queryParameters['password'] ?? '';
+      result.server = base;
+      result.streamType = 'api';
+    } else {
+      // Maybe just server URL or TS stream
+      result.server = base;
+      result.streamType = raw.contains('.ts') ? 'ts' : 'unknown';
+    }
 
-  _analyzeDifficulty(info);
-  return info;
-}
+    if (result.username.isEmpty || result.password.isEmpty) {
+      // Try to check just if URL is accessible
+      final body = await _get(raw);
+      if (body != null) {
+        result.status = 'ACCESSIBLE';
+      } else {
+        result.status = 'ERROR';
+        result.error = 'No se pudo acceder a la URL';
+      }
+      return result;
+    }
 
-Future<void> _checkPanel(ServerInfo info, String url) async {
-  try {
-    final body = await httpGet('$url/player_api.php?username=test&password=test');
-    if (body == null) { info.isActive = false; return; }
-    info.isActive = true;
+    // Check via player_api
+    final apiUrl = '${result.server}/player_api.php?username=${Uri.encodeComponent(result.username)}&password=${Uri.encodeComponent(result.password)}';
+    final body = await _get(apiUrl);
+
+    if (body == null) {
+      result.status = 'ERROR';
+      result.error = 'Sin respuesta del servidor';
+      return result;
+    }
+
+    Map<String, dynamic> data;
     try {
-      final data = jsonDecode(body) as Map<String, dynamic>;
-      final si = data['server_info'] as Map? ?? {};
-      info.panelType = si['server_protocol'] != null ? 'Xtream Codes' : 'Xtream Compatible';
-      info.panelVersion = si['rtmp_port']?.toString() ?? '';
-      info.timezone = si['timezone']?.toString() ?? '';
-      info.raw = Map<String, dynamic>.from(si);
+      data = jsonDecode(body) as Map<String, dynamic>;
     } catch (_) {
-      if (body.contains('Xtream')) info.panelType = 'Xtream Codes';
-      else if (body.contains('stalker')) info.panelType = 'Stalker Middleware';
-      else info.panelType = 'Custom Panel';
+      result.status = body.contains('"auth":1') ? 'ACTIVA' : 'INVÁLIDA';
+      return result;
     }
-  } catch (_) { info.isActive = false; }
-}
 
-Future<void> _getIPInfo(ServerInfo info) async {
-  try {
-    // First resolve IP via DNS
-    try {
-      final addresses = await InternetAddress.lookup(info.host).timeout(const Duration(seconds: 5));
-      if (addresses.isNotEmpty) info.ip = addresses.first.address;
-    } catch (_) {}
-    
-    final target = info.ip.isNotEmpty ? info.ip : info.host;
-    final body = await httpGet('http://ip-api.com/json/$target?fields=status,country,city,isp,org,proxy,hosting,as');
-    if (body == null) return;
-    final data = jsonDecode(body) as Map<String, dynamic>;
-    if (data['status'] == 'success') {
-      info.country = data['country'] ?? '';
-      info.city = data['city'] ?? '';
-      info.isp = data['isp'] ?? '';
-      info.org = data['org'] ?? '';
-      info.isProxy = data['proxy'] ?? false;
-      info.isHosting = data['hosting'] ?? false;
+    final ui = (data['user_info'] as Map?) ?? {};
+    final si = (data['server_info'] as Map?) ?? {};
+
+    final auth = ui['auth'];
+    final st = ui['status']?.toString().toLowerCase().trim() ?? '';
+    final isActive = auth == 1 || auth == '1' || auth == true ||
+      ['active','activo','enabled','premium','trial','free'].contains(st);
+
+    if (!isActive) {
+      result.status = (st == 'expired' || st == 'vencido') ? 'VENCIDA' : 'INVÁLIDA';
+      return result;
     }
-  } catch (_) {}
-}
 
-Future<void> _getSubdomains(ServerInfo info) async {
-  try {
-    // HackerTarget subdomain lookup
-    final body = await httpGet(
-      'https://api.hackertarget.com/hostsearch/?q=${info.host}',
-      timeout: 10);
-    if (body == null || body.contains('error') || body.contains('API count')) return;
-    final lines = body.split('\n').where((l) => l.trim().isNotEmpty).toList();
-    final subs = <String>{};
-    final ips = <String>{};
-    for (final line in lines) {
-      final parts = line.split(',');
-      if (parts.length >= 2) {
-        final sub = parts[0].trim();
-        final ip = parts[1].trim();
-        if (sub != info.host && sub.isNotEmpty) subs.add(sub);
-        if (ip != info.ip && ip.isNotEmpty && RegExp(r'^\d+\.\d+\.\d+\.\d+$').hasMatch(ip)) {
-          ips.add(ip);
-        }
+    // Parse expiry
+    final ts = ui['exp_date'];
+    if (ts == null || int.tryParse(ts.toString()) == null || int.parse(ts.toString()) <= 0) {
+      result.expira = 'Ilimitado';
+    } else {
+      final exp = DateTime.fromMillisecondsSinceEpoch(int.parse(ts.toString()) * 1000);
+      result.expira = '${exp.day.toString().padLeft(2,'0')}/${exp.month.toString().padLeft(2,'0')}/${exp.year}';
+      if (exp.isBefore(DateTime.now())) {
+        result.status = 'VENCIDA';
+        return result;
       }
     }
-    info.subdomains = subs.take(10).toList();
-    info.relatedIPs = ips.take(5).toList();
+
+    // Parse created
+    final tc = ui['created_at'];
+    if (tc != null && int.tryParse(tc.toString()) != null) {
+      final cre = DateTime.fromMillisecondsSinceEpoch(int.parse(tc.toString()) * 1000);
+      result.creado = '${cre.day.toString().padLeft(2,'0')}/${cre.month.toString().padLeft(2,'0')}/${cre.year}';
+    }
+
+    result.status = 'ACTIVA';
+    result.conex = ui['max_connections']?.toString() ?? '?';
+    result.activ = ui['active_cons']?.toString() ?? '0';
+    result.timezone = si['timezone']?.toString() ?? '';
+    result.country = si['country']?.toString() ?? '';
+
+    // Build M3U if not set
+    if (result.m3u.isEmpty) {
+      result.m3u = '${result.server}/get.php?username=${Uri.encodeComponent(result.username)}&password=${Uri.encodeComponent(result.password)}&type=m3u_plus';
+    }
+
+    // Verify panel
+    await _verifyPanel(result);
+
+  } catch (e) {
+    result.status = 'ERROR';
+    result.error = e.toString();
+  }
+
+  return result;
+}
+
+Future<void> _verifyPanel(CheckResult r) async {
+  try {
+    final res = await Future.wait([
+      _cnt(r.server, r.username, r.password, 'get_live_streams'),
+      _cnt(r.server, r.username, r.password, 'get_vod_categories'),
+      _cnt(r.server, r.username, r.password, 'get_series_categories'),
+    ]);
+    r.live = res[0];
+    r.vod = res[1];
+    r.series = res[2];
+    r.panelVerified = true;
   } catch (_) {}
 }
 
-Future<void> _measurePing(ServerInfo info, String url) async {
+Future<int> _cnt(String panel, String user, String pass, String action) async {
   try {
-    final t0 = DateTime.now();
-    await httpGet('$url/player_api.php?username=test&password=test', timeout: 10);
-    info.ping = DateTime.now().difference(t0).inMilliseconds;
-  } catch (_) { info.ping = -1; }
+    final url = '$panel/player_api.php?username=${Uri.encodeComponent(user)}&password=${Uri.encodeComponent(pass)}&action=$action';
+    final req = await _client.getUrl(Uri.parse(url));
+    req.headers.set('User-Agent', _ua());
+    final res = await req.close().timeout(const Duration(seconds: 15));
+    final body = await res.transform(utf8.decoder).join();
+    final data = jsonDecode(body);
+    if (data is List) return data.length;
+  } catch (_) {}
+  return 0;
 }
 
-void _analyzeDifficulty(ServerInfo info) {
-  int score = 0;
-  
-  if (info.isHosting) score += 2;
-  if (info.isProxy) score += 3;
-  if (info.ping > 500) score += 2;
-  if (info.ping > 1000) score += 2;
-  if (!info.isActive) score += 5;
-  
-  if (score <= 2) {
-    info.difficulty = 'FÁCIL';
-    info.proxyRecommendation = 'Sin proxy necesario — conexión directa óptima';
-  } else if (score <= 4) {
-    info.difficulty = 'MEDIO';
-    info.proxyRecommendation = 'Proxy HTTP recomendado para mayor anonimato';
-  } else if (score <= 6) {
-    info.difficulty = 'DIFÍCIL';
-    info.proxyRecommendation = 'Usa proxies rotativos HTTP/SOCKS5 — alta protección';
-  } else {
-    info.difficulty = 'MUY DIFÍCIL';
-    info.proxyRecommendation = 'Proxies residenciales obligatorios — servidor muy protegido';
-  }
-}
-
-class AnalyzerApp extends StatelessWidget {
-  const AnalyzerApp({super.key});
+class App extends StatelessWidget {
+  const App({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'JsusAnalyzer',
+    title: 'JsusChecker',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       scaffoldBackgroundColor: cBg,
       colorScheme: const ColorScheme.dark(primary: cG),
       fontFamily: 'monospace',
     ),
-    home: const AnalyzerScreen(),
+    home: const HomeScreen(),
   );
 }
 
-class AnalyzerScreen extends StatefulWidget {
-  const AnalyzerScreen({super.key});
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
   @override
-  State<AnalyzerScreen> createState() => _AS();
+  State<HomeScreen> createState() => _HS();
 }
 
-class _AS extends State<AnalyzerScreen> with TickerProviderStateMixin {
+class _HS extends State<HomeScreen> with TickerProviderStateMixin {
   final _ctrl = TextEditingController();
-  final _apiKeyCtrl = TextEditingController();
-  String _groqKey = '';
-  bool _useGroq = false;
-  ServerInfo? _info;
+  CheckResult? _result;
   bool _loading = false;
-  final _chatMessages = <Map<String, String>>[];
-  final _chatCtrl = TextEditingController();
-  bool _chatLoading = false;
-  int _tab = 0;
+  final _history = <CheckResult>[];
 
   late AnimationController _glowAc, _pulseAc;
   late Animation<double> _glow, _pulse;
@@ -220,7 +229,7 @@ class _AS extends State<AnalyzerScreen> with TickerProviderStateMixin {
   List<List<double>> _drops = [];
   List<List<String>> _chars = [];
   Timer? _matTimer;
-  static const _mch = '01ABCDEFアイウエオ<>{}[]|/*#@';
+  static const _mch = '01ABCDEFアイウエオ<>{}[]|/*#@!';
 
   @override
   void initState() {
@@ -246,7 +255,10 @@ class _AS extends State<AnalyzerScreen> with TickerProviderStateMixin {
         if (_rnd.nextDouble() < 0.03) _drops[c][0] = 1.0;
         for (var r = _drops[c].length - 1; r > 0; r--) {
           if (_drops[c][r-1] > 0.5 && _drops[c][r] < 0.1) _drops[c][r] = _drops[c][r-1] * 0.95;
-          if (_drops[c][r] > 0) { _drops[c][r] -= 0.015; if (_rnd.nextDouble() < 0.08) _chars[c][r] = _mch[_rnd.nextInt(_mch.length)]; }
+          if (_drops[c][r] > 0) {
+            _drops[c][r] -= 0.015;
+            if (_rnd.nextDouble() < 0.08) _chars[c][r] = _mch[_rnd.nextInt(_mch.length)];
+          }
         }
         _drops[c][0] *= 0.92;
       }
@@ -267,336 +279,32 @@ class _AS extends State<AnalyzerScreen> with TickerProviderStateMixin {
     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(2), side: const BorderSide(color: cG)),
   ));
 
-  Future<void> _analyze() async {
-    final input = _ctrl.text.trim();
-    if (input.isEmpty) { _toast('Ingresa un servidor'); return; }
-    setState(() { _loading = true; _info = null; _chatMessages.clear(); });
-    final info = await analyzeServer(input);
-    setState(() { _info = info; _loading = false; _tab = 1; });
-    // Auto welcome message
-    _addBotMsg(_generateWelcome(info));
-  }
-
-  String _generateWelcome(ServerInfo info) {
-    final buf = StringBuffer();
-    buf.writeln('Análisis completado para ${info.host}');
-    buf.writeln('');
-    if (info.isActive) {
-      buf.writeln('✓ Servidor ACTIVO — Panel: ${info.panelType}');
-      buf.writeln('  Ping: ${info.ping}ms | País: ${info.country}');
-      buf.writeln('  Dificultad: ${info.difficulty}');
-    } else {
-      buf.writeln('✗ Servidor NO RESPONDE');
-      buf.writeln('  Puede estar caído o bloqueando conexiones');
-    }
-    buf.writeln('');
-    buf.writeln('Puedes preguntarme cualquier cosa sobre este servidor.');
-    return buf.toString();
-  }
-
-  void _addBotMsg(String msg) {
-    setState(() => _chatMessages.add({'role': 'bot', 'text': msg}));
-  }
-
-  Future<void> _sendChat(String question) async {
-    if (_info == null) { _toast('Analiza un servidor primero'); return; }
-    final q = question.trim();
-    if (q.isEmpty) return;
+  Future<void> _check() async {
+    final url = _ctrl.text.trim();
+    if (url.isEmpty) { _toast('Pega una URL primero'); return; }
+    setState(() { _loading = true; _result = null; });
+    final r = await checkUrl(url);
     setState(() {
-      _chatMessages.add({'role': 'user', 'text': q});
-      _chatLoading = true;
-    });
-    _chatCtrl.clear();
-
-    String response;
-    if (_useGroq && _groqKey.isNotEmpty) {
-      response = await _groqResponse(q, _info!) ?? _generateResponse(q, _info!);
-    } else {
-      await Future.delayed(const Duration(milliseconds: 400));
-      response = _generateResponse(q, _info!);
-    }
-    setState(() {
-      _chatMessages.add({'role': 'bot', 'text': response});
-      _chatLoading = false;
+      _result = r;
+      _loading = false;
+      if (!_history.any((h) => h.rawUrl == r.rawUrl)) {
+        _history.insert(0, r);
+        if (_history.length > 20) _history.removeLast();
+      }
     });
   }
 
-  Future<String?> _groqResponse(String question, ServerInfo info) async {
-    try {
-      final systemPrompt = '''Eres un experto en servidores IPTV y ciberseguridad.
-Tienes acceso a esta información del servidor analizado:
-- Host: \${info.host}
-- IP: \${info.ip}
-- País: \${info.country}, Ciudad: \${info.city}
-- ISP: \${info.isp}
-- Panel: \${info.panelType}
-- Ping: \${info.ping}ms
-- Activo: \${info.isActive}
-- Dificultad escaneo: \${info.difficulty}
-- Es datacenter: \${info.isHosting}
-- Es proxy/VPN: \${info.isProxy}
-- Subdominios: \${info.subdomains.join(", ")}
-- IPs relacionadas: \${info.relatedIPs.join(", ")}
-- Recomendación proxies: \${info.proxyRecommendation}
-
-Responde de forma concisa y técnica en español.
-Usa emojis y formato legible. Max 200 palabras.''';
-
-      final body = jsonEncode({
-        'model': 'llama3-8b-8192',
-        'messages': [
-          {'role': 'system', 'content': systemPrompt},
-          ..._chatMessages.map((m) => {
-            'role': m['role'] == 'bot' ? 'assistant' : 'user',
-            'content': m['text'],
-          }),
-          {'role': 'user', 'content': question},
-        ],
-        'max_tokens': 400,
-        'temperature': 0.7,
-      });
-
-      final req = await _httpClient.postUrl(Uri.parse('https://api.groq.com/openai/v1/chat/completions'));
-      req.headers.set('Content-Type', 'application/json');
-      req.headers.set('Authorization', 'Bearer \$_groqKey');
-      req.write(body);
-      final res = await req.close().timeout(const Duration(seconds: 15));
-      final resBody = await res.transform(utf8.decoder).join();
-      final data = jsonDecode(resBody) as Map<String, dynamic>;
-      return data['choices'][0]['message']['content'] as String?;
-    } catch (e) {
-      return null;
+  Color get _statusColor {
+    switch (_result?.status) {
+      case 'ACTIVA': return cG;
+      case 'VENCIDA': return cOr;
+      case 'INVÁLIDA': return cRe;
+      case 'ACCESSIBLE': return cCy;
+      default: return cRe;
     }
   }
 
-  String _generateResponse(String q, ServerInfo info) {
-    final ql = q.toLowerCase();
-
-    if (ql.contains('dificil') || ql.contains('difícil') || ql.contains('dificultad') || ql.contains('escanear')) {
-      return '''Dificultad de escaneo: ${info.difficulty}
-
-${info.isHosting ? '⚠ Servidor en datacenter — puede tener rate limiting' : '✓ No parece datacenter protegido'}
-${info.isProxy ? '⚠ Detectado como proxy/VPN' : '✓ IP residencial/comercial'}
-Ping: ${info.ping > 0 ? '${info.ping}ms' : 'No medido'}
-
-${info.proxyRecommendation}''';
-    }
-
-    if (ql.contains('proxy') || ql.contains('proxies')) {
-      return '''Recomendación de proxies para ${info.host}:
-
-${info.proxyRecommendation}
-
-${info.difficulty == 'FÁCIL' ? '→ Conexión directa funcionará bien\n→ User-Agent aleatorio es suficiente' :
-  info.difficulty == 'MEDIO' ? '→ Proxies HTTP gratuitos pueden funcionar\n→ Rotar cada 50-100 peticiones' :
-  '→ Usa proxies SOCKS5 de pago\n→ Rotar cada 20-30 peticiones\n→ Prefiere IPs residenciales'}''';
-    }
-
-    if (ql.contains('subdomain') || ql.contains('subdominio') || ql.contains('servidor paralelo') || ql.contains('otros servidor')) {
-      if (info.subdomains.isEmpty && info.relatedIPs.isEmpty) {
-        return 'No se encontraron subdominios públicos para ${info.host}.\n\nEsto puede significar:\n→ El servidor usa una sola IP\n→ Los subdominios están ocultos\n→ Dominio registrado privadamente';
-      }
-      final buf = StringBuffer('Servidores relacionados encontrados:\n\n');
-      if (info.subdomains.isNotEmpty) {
-        buf.writeln('📡 Subdominios (${info.subdomains.length}):');
-        for (final s in info.subdomains) buf.writeln('  → $s');
-      }
-      if (info.relatedIPs.isNotEmpty) {
-        buf.writeln('\n🌐 IPs relacionadas:');
-        for (final ip in info.relatedIPs) buf.writeln('  → $ip');
-      }
-      return buf.toString();
-    }
-
-    if (ql.contains('país') || ql.contains('pais') || ql.contains('ubicacion') || ql.contains('ubicación') || ql.contains('donde')) {
-      return '''Ubicación del servidor:
-
-📍 País: ${info.country.isNotEmpty ? info.country : 'Desconocido'}
-🏙 Ciudad: ${info.city.isNotEmpty ? info.city : 'Desconocido'}
-🏢 ISP: ${info.isp.isNotEmpty ? info.isp : 'Desconocido'}
-🔧 Organización: ${info.org.isNotEmpty ? info.org : 'Desconocido'}
-🌐 IP: ${info.ip.isNotEmpty ? info.ip : 'No resuelta'}
-${info.isHosting ? '⚠ Servidor en hosting/datacenter' : '✓ No es datacenter conocido'}''';
-    }
-
-    if (ql.contains('panel') || ql.contains('software') || ql.contains('version') || ql.contains('versión')) {
-      return '''Información del panel:
-
-🔧 Tipo: ${info.panelType}
-${info.timezone.isNotEmpty ? '🕐 Timezone: ${info.timezone}' : ''}
-${info.panelVersion.isNotEmpty ? '📌 Puerto RTMP: ${info.panelVersion}' : ''}
-${info.isActive ? '✓ Panel respondiendo correctamente' : '✗ Panel no responde'}
-
-${info.panelType.contains('Xtream') ? 'Xtream Codes es el panel IPTV más común.\nSoporta API para verificar cuentas directamente.' : ''}''';
-    }
-
-    if (ql.contains('ping') || ql.contains('velocidad') || ql.contains('rapido') || ql.contains('rápido') || ql.contains('lento')) {
-      final pingInfo = info.ping <= 0 ? 'No medido' :
-        info.ping < 100 ? '${info.ping}ms ⚡ Excelente' :
-        info.ping < 300 ? '${info.ping}ms ✓ Bueno' :
-        info.ping < 600 ? '${info.ping}ms ⚠ Lento' :
-        '${info.ping}ms ✗ Muy lento';
-      return '''Velocidad del servidor:
-
-⚡ Ping: $pingInfo
-
-${info.ping > 0 && info.ping < 100 ? 'Servidor muy rápido — ideal para escanear con muchos bots' :
-  info.ping > 0 && info.ping < 300 ? 'Velocidad normal — usa 20-50 bots' :
-  info.ping > 0 ? 'Servidor lento — reduce bots a 10-20 máximo' :
-  'No se pudo medir la velocidad'}''';
-    }
-
-    if (ql.contains('activ') || ql.contains('funcion') || ql.contains('caido') || ql.contains('caído')) {
-      return '${info.isActive ? '✓ El servidor está ACTIVO y respondiendo' : '✗ El servidor NO responde'}\n\n${info.isActive ? 'Ping: ${info.ping}ms\nPanel: ${info.panelType}' : 'Posibles causas:\n→ Servidor caído temporalmente\n→ Bloqueando tu IP\n→ Puerto cerrado'}';
-    }
-
-    if (ql.contains('bots') || ql.contains('hilos') || ql.contains('threads') || ql.contains('cuantos')) {
-      final recommended = info.ping <= 0 ? 20 :
-        info.ping < 100 ? 50 :
-        info.ping < 300 ? 30 :
-        info.ping < 600 ? 15 : 10;
-      return '''Bots recomendados para ${info.host}:
-
-🤖 Recomendado: $recommended threads
-⚡ Ping actual: ${info.ping > 0 ? '${info.ping}ms' : 'No medido'}
-🛡 Dificultad: ${info.difficulty}
-
-${info.difficulty == 'FÁCIL' ? '→ Puedes subir hasta 100 bots sin problema' :
-  info.difficulty == 'MEDIO' ? '→ Mantén entre 20-50 para evitar bans' :
-  '→ Usa máximo 10-20 bots con proxies'}''';
-    }
-
-    if (ql.contains('donde') && (ql.contains('proxy') || ql.contains('proxies') || ql.contains('encuentro'))) {
-      return 'Fuentes GRATUITAS de proxies:\n\n'
-        '🌐 GITHUB (actualizadas diario):\n'
-        '→ TheSpeedX/PROXY-List\n'
-        '   HTTP, SOCKS4, SOCKS5\n\n'
-        '→ proxifly/free-proxy-list\n'
-        '   Múltiples protocolos\n\n'
-        '→ MuRongPIG/Proxy-Master\n'
-        '   HTTP y SOCKS5\n\n'
-        '→ monosans/proxy-list\n'
-        '   Verificados automáticamente\n\n'
-        '→ clarketm/proxy-list\n'
-        '   Lista clásica confiable\n\n'
-        '🔧 WEBS:\n'
-        '→ proxy-list.download\n'
-        '→ free-proxy-list.net\n'
-        '→ hidemy.name/en/proxy-list\n'
-        '→ spys.one/en/\n\n'
-        '💡 Descarga el .txt y cárgalo\n'
-        'en JsusIPTV Scanner tab PROXY';
-    }
-
-    if (ql.contains('socks') || ql.contains('tipo de proxy') || ql.contains('diferencia') || ql.contains('http proxy')) {
-      return 'Tipos de proxies:\n\n'
-        '🔵 HTTP:\n'
-        '→ Solo tráfico web básico\n'
-        '→ Más rápido pero menos seguro\n'
-        '→ Para servidores FÁCIL\n\n'
-        '🟡 SOCKS4:\n'
-        '→ Más versátil que HTTP\n'
-        '→ Soporta TCP\n'
-        '→ Para servidores MEDIO\n\n'
-        '🟢 SOCKS5:\n'
-        '→ El mejor para IPTV scanning\n'
-        '→ UDP + autenticación\n'
-        '→ Para servidores DIFÍCIL\n\n'
-        '🔴 RESIDENCIAL:\n'
-        '→ IPs de usuarios reales\n'
-        '→ Casi imposible de detectar\n'
-        '→ De pago — para MUY DIFÍCIL\n\n'
-        'Para \${info.host} (\${info.difficulty}):\n'
-        '\${info.difficulty == "FÁCIL" ? "→ HTTP es suficiente" : info.difficulty == "MEDIO" ? "→ SOCKS4/5 recomendado" : "→ SOCKS5 o residencial obligatorio"}';
-    }
-
-    if (ql.contains('vpn') || ql.contains('anonimo') || ql.contains('anónimo') || ql.contains('detectar')) {
-      return 'Cómo evitar ser detectado:\n\n'
-        '🛡 TÉCNICAS:\n'
-        '→ Rotar proxies cada 30-50 requests\n'
-        '→ User-Agents aleatorios\n'
-        '→ Delay entre peticiones (5-50ms)\n'
-        '→ Max 1000 CPM en protegidos\n\n'
-        '🔒 VPNs GRATUITAS:\n'
-        '→ ProtonVPN — sin límite datos\n'
-        '→ Windscribe — 10GB/mes\n'
-        '→ Tunnelbear — 500MB/mes\n'
-        '→ hide.me — 10GB/mes\n\n'
-        '⚠ SEÑALES DE BAN:\n'
-        '→ Muchos ERRORs seguidos\n'
-        '→ Respuestas 429 o 403\n'
-        '→ Timeout repentino\n\n'
-        '\${info.host}: \${info.proxyRecommendation}';
-    }
-
-    if (ql.contains('m3u') || ql.contains('reproducir') || ql.contains('ver') || ql.contains('reproductor')) {
-      return 'Reproductores recomendados:\n\n'
-        '📺 TiviMate (Android TV) ⭐⭐⭐⭐⭐\n'
-        '→ El mejor para IPTV\n'
-        '→ EPG, grabación, grupos\n\n'
-        '📱 IPTV Smarters Pro ⭐⭐⭐⭐\n'
-        '→ Android/iOS/PC\n'
-        '→ Soporte Xtream Codes directo\n\n'
-        '🖥 VLC ⭐⭐⭐\n'
-        '→ Gratis todas las plataformas\n'
-        '→ Abre M3U directamente\n\n'
-        '🎬 Kodi + PVR IPTV ⭐⭐⭐⭐\n'
-        '→ Muy personalizable\n'
-        '→ Gratis y open source\n\n'
-        '💡 Con las cuentas del scanner:\n'
-        'Copia el M3U y ábrelo en TiviMate';
-    }
-
-    if (ql.contains('timeout') || ql.contains('configurar') || ql.contains('ajustar') || ql.contains('parametros')) {
-      final rec = info.ping <= 0 ? 10 : info.ping < 100 ? 8 : info.ping < 300 ? 10 : info.ping < 600 ? 15 : 20;
-      final bots = info.ping < 100 ? '50-100' : info.ping < 300 ? '20-50' : '10-20';
-      return 'Configuración óptima para \${info.host}:\n\n'
-        '⚙ PARÁMETROS:\n'
-        '→ Timeout: \${rec}s\n'
-        '→ Bots: \$bots\n'
-        '→ Delay: \${info.difficulty == "FÁCIL" ? "5ms" : info.difficulty == "MEDIO" ? "20ms" : "50ms"}\n'
-        '→ Proxies: \${info.difficulty == "FÁCIL" ? "No necesario" : "Recomendado"}\n\n'
-        '📊 BASADO EN:\n'
-        '→ Ping: \${info.ping > 0 ? "\${info.ping}ms" : "No medido"}\n'
-        '→ Dificultad: \${info.difficulty}\n\n'
-        '💡 Si obtienes muchos ERROR:\n'
-        '→ Reduce bots a la mitad\n'
-        '→ Aumenta timeout 5s más\n'
-        '→ Agrega proxies rotativos';
-    }
-
-    if (ql.contains('puerto') || ql.contains('port')) {
-      return 'Puertos comunes en servidores IPTV:\n\n'
-        '🔌 MÁS USADOS:\n'
-        '→ :80    — HTTP estándar\n'
-        '→ :443   — HTTPS\n'
-        '→ :8080  — Alternativo HTTP\n'
-        '→ :8880  — Xtream Codes clásico\n'
-        '→ :2082  — Panel cPanel\n'
-        '→ :25461 — Alternativo popular\n'
-        '→ :1935  — RTMP streaming\n\n'
-        '\${info.host} usa puerto: \${info.port}\n\n'
-        '💡 Algunos servidores tienen el mismo\n'
-        'contenido en múltiples puertos.';
-    }
-
-    // Default response
-    return '''Sobre ${info.host}:
-
-Estado: ${info.isActive ? 'ACTIVO' : 'INACTIVO'}
-País: ${info.country.isNotEmpty ? info.country : 'Desconocido'}
-Panel: ${info.panelType}
-Ping: ${info.ping > 0 ? '${info.ping}ms' : 'No medido'}
-Dificultad: ${info.difficulty}
-
-Puedes preguntarme sobre:
-→ Dificultad de escaneo
-→ Proxies recomendados
-→ Subdominios/servidores paralelos
-→ Ubicación del servidor
-→ Bots recomendados
-→ Velocidad/ping''';
-  }
+  String _fn(int n) => n >= 1000 ? '${(n/1000).toStringAsFixed(1)}k' : '$n';
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -608,9 +316,16 @@ Puedes preguntarme sobre:
           colors: [Colors.transparent, cBg.withOpacity(0.75)])))),
       SafeArea(child: Column(children: [
         _header(),
-        _inputBar(),
-        if (_info != null) _tabBar(),
-        Expanded(child: _loading ? _loadingView() : _info == null ? _emptyView() : _tabContent()),
+        Expanded(child: SingleChildScrollView(
+          padding: const EdgeInsets.all(12),
+          child: Column(children: [
+            _urlInput(),
+            const SizedBox(height: 12),
+            if (_loading) _loadingCard(),
+            if (_result != null && !_loading) _resultCard(),
+            if (_history.isNotEmpty && _result == null && !_loading) _historySection(),
+          ]),
+        )),
       ])),
     ]),
   );
@@ -632,520 +347,365 @@ Puedes preguntarme sobre:
         child: ClipRRect(borderRadius: BorderRadius.circular(9),
           child: Image.asset('android-icon/icon.png',
             errorBuilder: (_, __, ___) => Container(color: cBg2,
-              child: const Center(child: Text('🔍', style: TextStyle(fontSize: 20)))))),
+              child: const Center(child: Text('✓', style: TextStyle(color: cG, fontSize: 20)))))),
       )),
       const SizedBox(width: 12),
       Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         AnimatedBuilder(animation: _glow, builder: (_, __) => ShaderMask(
           shaderCallback: (b) => LinearGradient(colors: [cG, cCy, cG]).createShader(b),
-          child: const Text('JsusAnalyzer', style: TextStyle(fontSize: 18,
+          child: const Text('JsusChecker', style: TextStyle(fontSize: 18,
             fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2)))),
-        Text('IPTV Server Intelligence v1.0',
-          style: TextStyle(fontSize: 8, color: cDg.withOpacity(0.8), letterSpacing: 2)),
+        Text('URL Checker v2.0 — M3U · M3U_Plus · TS',
+          style: TextStyle(fontSize: 8, color: cDg.withOpacity(0.8), letterSpacing: 1)),
       ])),
-      GestureDetector(
-        onTap: _showGroqSetup,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-          margin: const EdgeInsets.only(right: 6),
-          decoration: BoxDecoration(
-            color: _useGroq ? cMg.withOpacity(0.1) : cBr,
-            borderRadius: BorderRadius.circular(2),
-            border: Border.all(color: _useGroq ? cMg.withOpacity(0.5) : cBr)),
-          child: Text(_useGroq ? '⚡ AI ON' : '⚡ AI',
-            style: TextStyle(fontSize: 9, color: _useGroq ? cMg : cDg,
-              fontFamily: 'monospace', fontWeight: FontWeight.bold)),
-        ),
-      ),
       AnimatedBuilder(animation: _pulse, builder: (_, __) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
-          color: (_info?.isActive == true ? cG : cDg).withOpacity(0.08),
+          color: (_loading ? cYe : _result?.status == 'ACTIVA' ? cG : cDg).withOpacity(0.08),
           borderRadius: BorderRadius.circular(2),
-          border: Border.all(color: (_info?.isActive == true ? cG : cDg).withOpacity(0.4)),
+          border: Border.all(color: (_loading ? cYe : _result?.status == 'ACTIVA' ? cG : cDg).withOpacity(0.4)),
         ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           Container(width: 6, height: 6, decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: _info?.isActive == true ? cG : cDg,
-            boxShadow: [BoxShadow(color: (_info?.isActive == true ? cG : cDg).withOpacity(_pulse.value), blurRadius: 6)])),
+            color: _loading ? cYe : _result?.status == 'ACTIVA' ? cG : cDg,
+            boxShadow: [BoxShadow(
+              color: (_loading ? cYe : _result?.status == 'ACTIVA' ? cG : cDg).withOpacity(_pulse.value),
+              blurRadius: 6)])),
           const SizedBox(width: 5),
-          Text(_info?.isActive == true ? 'ONLINE' : 'IDLE',
-            style: TextStyle(fontSize: 9, color: _info?.isActive == true ? cG : cDg,
+          Text(_loading ? 'CHECKING' : _result?.status ?? 'IDLE',
+            style: TextStyle(fontSize: 9,
+              color: _loading ? cYe : _result?.status == 'ACTIVA' ? cG : cDg,
               letterSpacing: 1.5, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
         ]),
       )),
     ]),
   );
 
-  void _showGroqSetup() {
-    showDialog(context: context, builder: (_) => AlertDialog(
-      backgroundColor: cBg2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4), side: const BorderSide(color: cG)),
-      title: const Text('⚡ Groq AI Config', style: TextStyle(color: cG, fontFamily: 'monospace', fontSize: 14)),
-      content: Column(mainAxisSize: MainAxisSize.min, children: [
-        Text('Ingresa tu API Key de Groq\nconsole.groq.com',
-          style: TextStyle(color: cDg, fontSize: 11, fontFamily: 'monospace')),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _apiKeyCtrl,
-          style: const TextStyle(color: cG, fontSize: 11, fontFamily: 'monospace'),
-          obscureText: true,
-          decoration: InputDecoration(
-            hintText: 'gsk_...',
-            hintStyle: TextStyle(color: cDg.withOpacity(0.5)),
-            filled: true, fillColor: Colors.black54,
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(2), borderSide: const BorderSide(color: cG)),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          ),
-        ),
-      ]),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: Text('CANCELAR', style: TextStyle(color: cRe, fontFamily: 'monospace'))),
-        TextButton(
-          onPressed: () {
-            setState(() {
-              _groqKey = _apiKeyCtrl.text.trim();
-              _useGroq = _groqKey.isNotEmpty;
-            });
-            Navigator.pop(context);
-            _toast(_groqKey.isNotEmpty ? '✓ Groq AI activado' : 'Key vacía');
-          },
-          child: Text('ACTIVAR', style: TextStyle(color: cG, fontFamily: 'monospace'))),
-      ],
-    ));
-  }
-
-  Widget _inputBar() => Container(
-    padding: const EdgeInsets.all(10),
+  Widget _urlInput() => Container(
     decoration: BoxDecoration(
       color: cBg2.withOpacity(0.9),
-      border: Border(bottom: BorderSide(color: cBr)),
+      borderRadius: BorderRadius.circular(6),
+      border: Border.all(color: cG.withOpacity(0.2)),
+      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 10)],
     ),
-    child: Row(children: [
-      Expanded(child: TextField(
+    child: Column(children: [
+      // Label
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: cG.withOpacity(0.05),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
+          border: Border(bottom: BorderSide(color: cBr)),
+        ),
+        child: Row(children: [
+          Container(width: 2, height: 12, color: cG, margin: const EdgeInsets.only(right: 8)),
+          const Text('PEGAR URL', style: TextStyle(fontSize: 10, color: cDg,
+            letterSpacing: 2, fontWeight: FontWeight.bold)),
+          const Spacer(),
+          GestureDetector(
+            onTap: () async {
+              final data = await Clipboard.getData('text/plain');
+              if (data?.text != null) {
+                _ctrl.text = data!.text!;
+                _toast('URL pegada');
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: cCy.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(2),
+                border: Border.all(color: cCy.withOpacity(0.3))),
+              child: const Text('📋 PEGAR', style: TextStyle(fontSize: 9, color: cCy,
+                fontFamily: 'monospace', fontWeight: FontWeight.bold))),
+          ),
+        ]),
+      ),
+      // Input
+      Padding(padding: const EdgeInsets.all(10), child: TextField(
         controller: _ctrl,
-        style: const TextStyle(color: cG, fontSize: 12, fontFamily: 'monospace'),
-        onSubmitted: (_) => _analyze(),
+        style: const TextStyle(color: cG, fontSize: 11, fontFamily: 'monospace'),
+        maxLines: 3,
+        minLines: 1,
+        onSubmitted: (_) => _check(),
         decoration: InputDecoration(
-          hintText: 'http://servidor.com:8080',
-          hintStyle: TextStyle(color: cDg.withOpacity(0.5), fontSize: 11),
+          hintText: 'http://server.com:8080/get.php?username=xxx&password=yyy&type=m3u_plus',
+          hintStyle: TextStyle(color: cDg.withOpacity(0.4), fontSize: 10),
           filled: true, fillColor: Colors.black54,
-          prefixText: '>> ', prefixStyle: const TextStyle(color: cG, fontFamily: 'monospace'),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(2), borderSide: BorderSide(color: cG.withOpacity(0.3))),
-          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(2), borderSide: BorderSide(color: cG.withOpacity(0.3))),
-          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(2), borderSide: const BorderSide(color: cG, width: 1.5)),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(3),
+            borderSide: BorderSide(color: cG.withOpacity(0.3))),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(3),
+            borderSide: BorderSide(color: cG.withOpacity(0.3))),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(3),
+            borderSide: const BorderSide(color: cG, width: 1.5)),
+          contentPadding: const EdgeInsets.all(10),
         ),
       )),
-      const SizedBox(width: 8),
-      GestureDetector(
-        onTap: _analyze,
-        child: AnimatedBuilder(animation: _glow, builder: (_, __) => Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(colors: [cG.withOpacity(0.08), cG.withOpacity(0.15)]),
-            borderRadius: BorderRadius.circular(2),
-            border: Border.all(color: cG.withOpacity(0.6)),
-            boxShadow: [BoxShadow(color: cG.withOpacity(_glow.value * 0.3), blurRadius: 12)],
-          ),
-          child: Text('SCAN', style: TextStyle(color: cG, fontSize: 11,
-            fontWeight: FontWeight.bold, letterSpacing: 2,
-            shadows: [Shadow(color: cG.withOpacity(_glow.value), blurRadius: 8)])),
-        )),
-      ),
-    ]),
-  );
-
-  Widget _tabBar() => Container(
-    decoration: BoxDecoration(
-      color: cBg2.withOpacity(0.9),
-      border: Border(bottom: BorderSide(color: cBr)),
-    ),
-    child: Row(children: [
-      _tabBtn('📊 INFO', 0),
-      _tabBtn('💬 CHAT', 1),
-      _tabBtn('📡 RED', 2),
-    ]),
-  );
-
-  Widget _tabBtn(String label, int idx) => Expanded(child: GestureDetector(
-    onTap: () => setState(() => _tab = idx),
-    child: Container(
-      padding: const EdgeInsets.symmetric(vertical: 9),
-      decoration: BoxDecoration(
-        color: _tab == idx ? cG.withOpacity(0.07) : Colors.transparent,
-        border: Border(bottom: BorderSide(color: _tab == idx ? cG : Colors.transparent, width: 2))),
-      child: Text(label, textAlign: TextAlign.center,
-        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1,
-          color: _tab == idx ? cG : cDg, fontFamily: 'monospace',
-          shadows: _tab == idx ? [const Shadow(color: cG, blurRadius: 8)] : null)),
-    ),
-  ));
-
-  Widget _loadingView() => Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-    AnimatedBuilder(animation: _glow, builder: (_, __) => Container(
-      width: 60, height: 60,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        border: Border.all(color: cG.withOpacity(_glow.value), width: 2),
-        boxShadow: [BoxShadow(color: cG.withOpacity(_glow.value * 0.3), blurRadius: 20)],
-      ),
-      child: const Center(child: CircularProgressIndicator(color: cG, strokeWidth: 2)),
-    )),
-    const SizedBox(height: 20),
-    Text('ANALIZANDO SERVIDOR...', style: TextStyle(fontSize: 12, color: cG,
-      fontFamily: 'monospace', letterSpacing: 3,
-      shadows: [const Shadow(color: cG, blurRadius: 8)])),
-    const SizedBox(height: 8),
-    Text('Recopilando información...', style: TextStyle(fontSize: 9, color: cDg, fontFamily: 'monospace')),
-  ]));
-
-  Widget _emptyView() => Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-    AnimatedBuilder(animation: _pulse, builder: (_, __) => Text('[ JSUS ANALYZER ]',
-      style: TextStyle(fontSize: 16, color: cG.withOpacity(_pulse.value * 0.7),
-        fontFamily: 'monospace', letterSpacing: 3,
-        shadows: [Shadow(color: cG.withOpacity(_pulse.value * 0.4), blurRadius: 20)]))),
-    const SizedBox(height: 16),
-    _infoLine('Ingresa un servidor IPTV para analizar'),
-    _infoLine('Detecta panel, ubicación, subdominios'),
-    _infoLine('Evalúa dificultad y recomienda proxies'),
-    _infoLine('Chat inteligente sobre el servidor'),
-    const SizedBox(height: 20),
-    Text('Ej: http://starlatino.tv:8880',
-      style: TextStyle(fontSize: 10, color: cDg.withOpacity(0.6), fontFamily: 'monospace')),
-  ]));
-
-  Widget _infoLine(String t) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 3),
-    child: Row(mainAxisSize: MainAxisSize.min, children: [
-      Text('→ ', style: const TextStyle(color: cG, fontFamily: 'monospace')),
-      Text(t, style: TextStyle(fontSize: 10, color: cDg, fontFamily: 'monospace')),
-    ]),
-  );
-
-  Widget _tabContent() {
-    switch (_tab) {
-      case 0: return _infoTab();
-      case 1: return _chatTab();
-      case 2: return _networkTab();
-      default: return _infoTab();
-    }
-  }
-
-  // ═══ INFO TAB ═══
-  Widget _infoTab() {
-    final info = _info!;
-    return ListView(padding: const EdgeInsets.all(10), children: [
-      // Status card
-      _card(accent: info.isActive ? cG : cRe, child: Column(children: [
-        Row(children: [
-          Container(width: 10, height: 10, decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: info.isActive ? cG : cRe,
-            boxShadow: [BoxShadow(color: info.isActive ? cG : cRe, blurRadius: 8)])),
-          const SizedBox(width: 8),
-          Text(info.isActive ? 'SERVIDOR ACTIVO' : 'SERVIDOR INACTIVO',
-            style: TextStyle(fontSize: 13, color: info.isActive ? cG : cRe,
-              fontWeight: FontWeight.bold, fontFamily: 'monospace', letterSpacing: 2,
-              shadows: [Shadow(color: info.isActive ? cG : cRe, blurRadius: 8)])),
-          const Spacer(),
-          if (info.ping > 0) Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: cCy.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(2),
-              border: Border.all(color: cCy.withOpacity(0.3))),
-            child: Text('${info.ping}ms', style: const TextStyle(fontSize: 10, color: cCy,
-              fontFamily: 'monospace', fontWeight: FontWeight.bold))),
-        ]),
-        const SizedBox(height: 10),
-        _row('HOST', info.host, cCy),
-        if (info.ip.isNotEmpty) _row('IP', info.ip, cCy),
-        _row('PANEL', info.panelType, cMg),
-        if (info.timezone.isNotEmpty) _row('TIMEZONE', info.timezone, cDg),
-      ])),
-      // Location card
-      _card(accent: cYe, child: Column(children: [
-        _cardTitle('📍 UBICACIÓN'),
-        _row('PAÍS', info.country.isNotEmpty ? info.country : 'Desconocido', cYe),
-        _row('CIUDAD', info.city.isNotEmpty ? info.city : 'Desconocido', cYe),
-        _row('ISP', info.isp.isNotEmpty ? info.isp : 'Desconocido', cDg),
-        _row('ORG', info.org.isNotEmpty ? info.org : 'Desconocido', cDg),
-        const SizedBox(height: 6),
-        Row(children: [
-          _badge(info.isHosting ? '⚠ DATACENTER' : '✓ NO DATACENTER', info.isHosting ? cOr : cG),
-          const SizedBox(width: 6),
-          _badge(info.isProxy ? '⚠ PROXY/VPN' : '✓ IP DIRECTA', info.isProxy ? cOr : cG),
-        ]),
-      ])),
-      // Difficulty card
-      _card(accent: _diffColor(info.difficulty), child: Column(children: [
-        _cardTitle('🛡 DIFICULTAD DE ESCANEO'),
-        const SizedBox(height: 6),
-        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          AnimatedBuilder(animation: _glow, builder: (_, __) => Text(
-            info.difficulty,
-            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold,
-              color: _diffColor(info.difficulty), fontFamily: 'monospace', letterSpacing: 2,
-              shadows: [Shadow(color: _diffColor(info.difficulty).withOpacity(_glow.value), blurRadius: 15)]))),
-        ]),
-        const SizedBox(height: 8),
-        Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.3),
-            borderRadius: BorderRadius.circular(2),
-            border: Border.all(color: cBr)),
-          child: Row(children: [
-            const Text('💡 ', style: TextStyle(fontSize: 12)),
-            Expanded(child: Text(info.proxyRecommendation,
-              style: const TextStyle(fontSize: 10, color: cCy, fontFamily: 'monospace'))),
-          ]),
-        ),
-      ])),
-    ]);
-  }
-
-  // ═══ CHAT TAB ═══
-  Widget _chatTab() => Column(children: [
-    Expanded(child: _chatMessages.isEmpty
-      ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text('💬', style: const TextStyle(fontSize: 40)),
-          const SizedBox(height: 10),
-          Text('Pregúntame sobre el servidor', style: TextStyle(fontSize: 11, color: cDg, fontFamily: 'monospace')),
-          const SizedBox(height: 16),
-          _quickBtn('¿Qué tan difícil es escanearlo?'),
-          _quickBtn('¿Qué proxies recomiendas?'),
-          _quickBtn('¿Tiene servidores paralelos?'),
-          _quickBtn('¿Cuántos bots usar?'),
-          _quickBtn('¿Dónde está ubicado?'),
-        ]))
-      : ListView.builder(
-          padding: const EdgeInsets.all(10),
-          itemCount: _chatMessages.length + (_chatLoading ? 1 : 0),
-          itemBuilder: (_, i) {
-            if (i == _chatMessages.length) return _typingIndicator();
-            final m = _chatMessages[i];
-            return _chatBubble(m['text']!, m['role'] == 'user');
-          })),
-    Container(
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: cBg2.withOpacity(0.95),
-        border: Border(top: BorderSide(color: cBr)),
-      ),
-      child: Row(children: [
-        Expanded(child: TextField(
-          controller: _chatCtrl,
-          style: const TextStyle(color: cG, fontSize: 12, fontFamily: 'monospace'),
-          onSubmitted: _sendChat,
-          decoration: InputDecoration(
-            hintText: 'Pregunta sobre el servidor...',
-            hintStyle: TextStyle(color: cDg.withOpacity(0.5), fontSize: 11),
-            filled: true, fillColor: Colors.black54,
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(2), borderSide: BorderSide(color: cG.withOpacity(0.3))),
-            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(2), borderSide: BorderSide(color: cG.withOpacity(0.3))),
-            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(2), borderSide: const BorderSide(color: cG)),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-          ),
-        )),
-        const SizedBox(width: 8),
-        GestureDetector(
-          onTap: () => _sendChat(_chatCtrl.text),
-          child: Container(
-            padding: const EdgeInsets.all(11),
-            decoration: BoxDecoration(
-              color: cG.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(2),
-              border: Border.all(color: cG.withOpacity(0.5))),
-            child: const Text('▶', style: TextStyle(color: cG, fontSize: 14)),
-          ),
-        ),
-      ]),
-    ),
-  ]);
-
-  Widget _quickBtn(String text) => GestureDetector(
-    onTap: () => _sendChat(text),
-    child: Container(
-      margin: const EdgeInsets.only(bottom: 6),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: BoxDecoration(
-        color: cG.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(2),
-        border: Border.all(color: cG.withOpacity(0.25))),
-      child: Text(text, style: const TextStyle(fontSize: 10, color: cG, fontFamily: 'monospace')),
-    ),
-  );
-
-  Widget _chatBubble(String text, bool isUser) => Container(
-    margin: EdgeInsets.only(bottom: 8, left: isUser ? 40 : 0, right: isUser ? 0 : 40),
-    padding: const EdgeInsets.all(10),
-    decoration: BoxDecoration(
-      color: isUser ? cG.withOpacity(0.08) : cBg2.withOpacity(0.9),
-      borderRadius: BorderRadius.circular(4),
-      border: Border.all(color: isUser ? cG.withOpacity(0.3) : cBr),
-    ),
-    child: Text(text, style: TextStyle(
-      fontSize: 11, color: isUser ? cG : cCy, fontFamily: 'monospace', height: 1.5)),
-  );
-
-  Widget _typingIndicator() => Container(
-    margin: const EdgeInsets.only(bottom: 8, right: 40),
-    padding: const EdgeInsets.all(10),
-    decoration: BoxDecoration(
-      color: cBg2.withOpacity(0.9),
-      borderRadius: BorderRadius.circular(4),
-      border: Border.all(color: cBr)),
-    child: AnimatedBuilder(animation: _pulse, builder: (_, __) =>
-      Text('Analizando...', style: TextStyle(fontSize: 11, color: cDg.withOpacity(_pulse.value),
-        fontFamily: 'monospace'))),
-  );
-
-  // ═══ NETWORK TAB ═══
-  Widget _networkTab() {
-    final info = _info!;
-    return ListView(padding: const EdgeInsets.all(10), children: [
-      _card(accent: cCy, child: Column(children: [
-        _cardTitle('📡 SUBDOMINIOS ENCONTRADOS'),
-        if (info.subdomains.isEmpty)
-          Padding(padding: const EdgeInsets.all(8),
-            child: Text('No se encontraron subdominios públicos',
-              style: TextStyle(fontSize: 10, color: cDg, fontFamily: 'monospace')))
-        else
-          ...info.subdomains.map((s) => Container(
-            margin: const EdgeInsets.only(bottom: 4),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            decoration: BoxDecoration(
-              color: cCy.withOpacity(0.05),
-              borderRadius: BorderRadius.circular(2),
-              border: Border.all(color: cCy.withOpacity(0.2))),
-            child: Row(children: [
-              const Text('├ ', style: TextStyle(color: cCy, fontFamily: 'monospace')),
-              Expanded(child: Text(s, style: const TextStyle(fontSize: 10, color: cCy, fontFamily: 'monospace'))),
-              GestureDetector(
-                onTap: () { Clipboard.setData(ClipboardData(text: s)); _toast('Copiado'); },
-                child: const Text('[CPY]', style: TextStyle(color: cDg, fontSize: 9, fontFamily: 'monospace'))),
-            ]),
-          )),
-      ])),
-      _card(accent: cMg, child: Column(children: [
-        _cardTitle('🌐 IPs RELACIONADAS'),
-        if (info.relatedIPs.isEmpty)
-          Padding(padding: const EdgeInsets.all(8),
-            child: Text('No se encontraron IPs relacionadas',
-              style: TextStyle(fontSize: 10, color: cDg, fontFamily: 'monospace')))
-        else
-          ...info.relatedIPs.map((ip) => Container(
-            margin: const EdgeInsets.only(bottom: 4),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            decoration: BoxDecoration(
-              color: cMg.withOpacity(0.05),
-              borderRadius: BorderRadius.circular(2),
-              border: Border.all(color: cMg.withOpacity(0.2))),
-            child: Row(children: [
-              const Text('├ ', style: TextStyle(color: cMg, fontFamily: 'monospace')),
-              Expanded(child: Text(ip, style: const TextStyle(fontSize: 10, color: cMg, fontFamily: 'monospace'))),
-              GestureDetector(
-                onTap: () { Clipboard.setData(ClipboardData(text: ip)); _toast('Copiado'); },
-                child: const Text('[CPY]', style: TextStyle(color: cDg, fontSize: 9, fontFamily: 'monospace'))),
-            ]),
-          )),
-      ])),
-      _card(accent: cYe, child: Column(children: [
-        _cardTitle('⚡ RESUMEN DE ESCANEO'),
-        _row('SERVIDOR', info.host, cCy),
-        _row('IP', info.ip.isNotEmpty ? info.ip : 'No resuelta', cCy),
-        _row('PAÍS', info.country.isNotEmpty ? info.country : 'Desconocido', cYe),
-        _row('PING', info.ping > 0 ? '${info.ping}ms' : 'No medido', cYe),
-        _row('DIFICULTAD', info.difficulty, _diffColor(info.difficulty)),
-        _row('PROXIES', info.proxyRecommendation.split('—').first.trim(), cG),
-        const SizedBox(height: 8),
-        GestureDetector(
-          onTap: () {
-            final txt = '''SERVIDOR: ${info.host}
-IP: ${info.ip}
-PAÍS: ${info.country} - ${info.city}
-ISP: ${info.isp}
-PANEL: ${info.panelType}
-PING: ${info.ping}ms
-DIFICULTAD: ${info.difficulty}
-PROXIES: ${info.proxyRecommendation}
-SUBDOMINIOS: ${info.subdomains.join(', ')}''';
-            Clipboard.setData(ClipboardData(text: txt));
-            _toast('Reporte copiado');
-          },
+      // Button
+      Padding(padding: const EdgeInsets.fromLTRB(10, 0, 10, 10), child:
+        AnimatedBuilder(animation: _glow, builder: (_, __) => GestureDetector(
+          onTap: _check,
           child: Container(
             width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 10),
+            padding: const EdgeInsets.symmetric(vertical: 14),
             decoration: BoxDecoration(
-              color: cG.withOpacity(0.07),
-              borderRadius: BorderRadius.circular(2),
-              border: Border.all(color: cG.withOpacity(0.4))),
-            child: const Text('📋 COPIAR REPORTE COMPLETO', textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 11, color: cG, fontFamily: 'monospace',
-                fontWeight: FontWeight.bold, letterSpacing: 2))),
-        ),
-      ])),
-    ]);
-  }
-
-  Color _diffColor(String d) {
-    switch (d) {
-      case 'FÁCIL': return cG;
-      case 'MEDIO': return cYe;
-      case 'DIFÍCIL': return cOr;
-      case 'MUY DIFÍCIL': return cRe;
-      default: return cDg;
-    }
-  }
-
-  Widget _card({Color accent = cBr, required Widget child}) => Container(
-    margin: const EdgeInsets.only(bottom: 10),
-    padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
-    decoration: BoxDecoration(
-      color: cBg2.withOpacity(0.88),
-      borderRadius: BorderRadius.circular(4),
-      border: Border.all(color: cBr),
-      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 10)],
-    ),
-    child: Stack(children: [
-      Positioned(left: -14, top: -12, bottom: -12, child: Container(width: 3,
-        decoration: BoxDecoration(
-          borderRadius: const BorderRadius.horizontal(left: Radius.circular(4)),
-          gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter,
-            colors: [accent, accent.withOpacity(0.1)])))),
-      child,
+              gradient: LinearGradient(colors: [cG.withOpacity(0.06), cG.withOpacity(0.14)]),
+              borderRadius: BorderRadius.circular(3),
+              border: Border.all(color: cG.withOpacity(0.6), width: 1.5),
+              boxShadow: [BoxShadow(color: cG.withOpacity(_glow.value * 0.3), blurRadius: 20)],
+            ),
+            child: Text('[ VERIFICAR ]', textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold,
+                letterSpacing: 4, fontFamily: 'monospace', color: cG,
+                shadows: [Shadow(color: cG.withOpacity(_glow.value), blurRadius: 12)])),
+          ),
+        )),
+      ),
     ]),
   );
 
-  Widget _cardTitle(String t) => Padding(
-    padding: const EdgeInsets.only(bottom: 10),
+  Widget _loadingCard() => Container(
+    padding: const EdgeInsets.all(30),
+    decoration: BoxDecoration(
+      color: cBg2.withOpacity(0.9),
+      borderRadius: BorderRadius.circular(6),
+      border: Border.all(color: cBr),
+    ),
+    child: Column(children: [
+      AnimatedBuilder(animation: _glow, builder: (_, __) => Container(
+        width: 50, height: 50,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: cG.withOpacity(_glow.value), width: 2),
+          boxShadow: [BoxShadow(color: cG.withOpacity(_glow.value * 0.3), blurRadius: 15)],
+        ),
+        child: const Center(child: CircularProgressIndicator(color: cG, strokeWidth: 2)),
+      )),
+      const SizedBox(height: 16),
+      Text('VERIFICANDO...', style: TextStyle(fontSize: 12, color: cG,
+        fontFamily: 'monospace', letterSpacing: 3,
+        shadows: [const Shadow(color: cG, blurRadius: 6)])),
+      const SizedBox(height: 4),
+      Text('Comprobando estado de la URL',
+        style: TextStyle(fontSize: 9, color: cDg, fontFamily: 'monospace')),
+    ]),
+  );
+
+  Widget _resultCard() {
+    final r = _result!;
+    final c = _statusColor;
+    return Container(
+      decoration: BoxDecoration(
+        color: cBg2.withOpacity(0.9),
+        borderRadius: BorderRadius.circular(6),
+        border: Border(
+          left: BorderSide(color: c, width: 4),
+          top: BorderSide(color: c.withOpacity(0.3)),
+          right: BorderSide(color: c.withOpacity(0.1)),
+          bottom: BorderSide(color: c.withOpacity(0.1)),
+        ),
+        boxShadow: [BoxShadow(color: c.withOpacity(0.1), blurRadius: 20)],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // Status header
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: c.withOpacity(0.07),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
+            border: Border(bottom: BorderSide(color: c.withOpacity(0.2))),
+          ),
+          child: Row(children: [
+            AnimatedBuilder(animation: _pulse, builder: (_, __) => Container(
+              width: 10, height: 10,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle, color: c,
+                boxShadow: [BoxShadow(color: c.withOpacity(_pulse.value), blurRadius: 10)],
+              ),
+            )),
+            const SizedBox(width: 10),
+            Text(r.status, style: TextStyle(fontSize: 16, color: c,
+              fontWeight: FontWeight.bold, fontFamily: 'monospace', letterSpacing: 3,
+              shadows: [Shadow(color: c, blurRadius: 10)])),
+            const Spacer(),
+            if (r.status == 'ACTIVA') Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: cG.withOpacity(0.1), borderRadius: BorderRadius.circular(2),
+                border: Border.all(color: cG.withOpacity(0.3))),
+              child: const Text('✓ VÁLIDA', style: TextStyle(fontSize: 9, color: cG,
+                fontFamily: 'monospace', fontWeight: FontWeight.bold))),
+          ]),
+        ),
+
+        Padding(padding: const EdgeInsets.all(14), child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+          // Credentials
+          if (r.username.isNotEmpty) ...[
+            _sec('CREDENCIALES'),
+            _row('USUARIO', r.username, cG),
+            _row('CONTRASEÑA', r.password, cCy),
+            _row('SERVIDOR', r.server, cMg),
+            const SizedBox(height: 10),
+          ],
+
+          // Status info
+          _sec('ESTADO'),
+          if (r.expira.isNotEmpty) _row('VENCIMIENTO', r.expira,
+            r.expira == 'Ilimitado' ? cG : cYe),
+          if (r.creado.isNotEmpty) _row('CREADO', r.creado, cDg),
+          if (r.conex.isNotEmpty) _row('CONEXIONES', '${r.activ}/${r.conex}', cCy),
+          if (r.timezone.isNotEmpty) _row('TIMEZONE', r.timezone, cMg),
+          if (r.country.isNotEmpty) _row('PAÍS', r.country, cYe),
+          if (r.streamType.isNotEmpty) _row('TIPO', r.streamType.toUpperCase(), cDg),
+
+          if (r.error.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: cRe.withOpacity(0.08), borderRadius: BorderRadius.circular(3),
+                border: Border.all(color: cRe.withOpacity(0.2))),
+              child: Text(r.error, style: const TextStyle(fontSize: 9, color: cRe, fontFamily: 'monospace'))),
+          ],
+
+          // Panel info
+          if (r.panelVerified) ...[
+            const SizedBox(height: 10),
+            _sec('CONTENIDO'),
+            Row(children: [
+              Expanded(child: _panelBox('📺', 'CANALES', _fn(r.live), cG)),
+              const SizedBox(width: 8),
+              Expanded(child: _panelBox('🎬', 'VOD', _fn(r.vod), cCy)),
+              const SizedBox(width: 8),
+              Expanded(child: _panelBox('📺', 'SERIES', _fn(r.series), cMg)),
+            ]),
+          ] else if (r.status == 'ACTIVA') ...[
+            const SizedBox(height: 10),
+            Row(children: [
+              const SizedBox(width: 12, height: 12,
+                child: CircularProgressIndicator(strokeWidth: 1.5, color: cG)),
+              const SizedBox(width: 8),
+              Text('Verificando contenido...', style: TextStyle(fontSize: 9, color: cDg, fontFamily: 'monospace')),
+            ]),
+          ],
+
+          // Actions
+          const SizedBox(height: 14),
+          Row(children: [
+            Expanded(child: _btn('📋 COPIAR TODO', cCy, () {
+              var t = 'STATUS: ${r.status}\n';
+              if (r.username.isNotEmpty) t += 'USER: ${r.username}\nPASS: ${r.password}\nSERVER: ${r.server}\n';
+              if (r.expira.isNotEmpty) t += 'EXP: ${r.expira}\n';
+              if (r.conex.isNotEmpty) t += 'CONEX: ${r.activ}/${r.conex}\n';
+              if (r.timezone.isNotEmpty) t += 'TZ: ${r.timezone}\n';
+              if (r.panelVerified) t += 'CANALES: ${r.live}\nVOD: ${r.vod}\nSERIES: ${r.series}\n';
+              if (r.m3u.isNotEmpty) t += 'M3U: ${r.m3u}';
+              Clipboard.setData(ClipboardData(text: t));
+              _toast('Copiado');
+            })),
+            const SizedBox(width: 8),
+            if (r.m3u.isNotEmpty) Expanded(child: _btn('📺 M3U', cG, () {
+              Clipboard.setData(ClipboardData(text: r.m3u));
+              _toast('M3U copiado');
+            })),
+          ]),
+          const SizedBox(height: 6),
+          _btn('🔄 NUEVA VERIFICACIÓN', cMg, () {
+            setState(() { _result = null; _ctrl.clear(); });
+          }),
+        ])),
+      ]),
+    );
+  }
+
+  Widget _historySection() => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Row(children: [
+      Container(width: 2, height: 12, color: cDg, margin: const EdgeInsets.only(right: 8)),
+      Text('HISTORIAL', style: TextStyle(fontSize: 10, color: cDg,
+        letterSpacing: 3, fontWeight: FontWeight.bold)),
+    ])),
+    ..._history.map((h) => GestureDetector(
+      onTap: () { _ctrl.text = h.rawUrl; _check(); },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: cBg2.withOpacity(0.8),
+          borderRadius: BorderRadius.circular(4),
+          border: Border(left: BorderSide(
+            color: h.status == 'ACTIVA' ? cG : h.status == 'VENCIDA' ? cOr : cRe,
+            width: 3))),
+        child: Row(children: [
+          Container(width: 6, height: 6, decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: h.status == 'ACTIVA' ? cG : h.status == 'VENCIDA' ? cOr : cRe)),
+          const SizedBox(width: 8),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(h.server.isNotEmpty ? h.server : h.rawUrl.substring(0, min(40, h.rawUrl.length)),
+              style: const TextStyle(fontSize: 10, color: cCy, fontFamily: 'monospace'),
+              overflow: TextOverflow.ellipsis),
+            if (h.username.isNotEmpty) Text(h.username,
+              style: TextStyle(fontSize: 9, color: cDg, fontFamily: 'monospace')),
+          ])),
+          Text(h.status, style: TextStyle(fontSize: 9,
+            color: h.status == 'ACTIVA' ? cG : h.status == 'VENCIDA' ? cOr : cRe,
+            fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+        ]),
+      ),
+    )),
+  ]);
+
+  Widget _sec(String t) => Padding(
+    padding: const EdgeInsets.only(bottom: 6, top: 2),
     child: Row(children: [
-      Container(width: 2, height: 12, color: cG, margin: const EdgeInsets.only(right: 8)),
-      Text(t, style: const TextStyle(fontSize: 11, color: cDg, letterSpacing: 2,
-        fontWeight: FontWeight.bold, fontFamily: 'monospace',
-        shadows: [Shadow(color: cG, blurRadius: 4)])),
+      Container(width: 2, height: 10, color: cG, margin: const EdgeInsets.only(right: 6)),
+      Text(t, style: TextStyle(fontSize: 9, color: cDg.withOpacity(0.8),
+        letterSpacing: 2, fontWeight: FontWeight.bold)),
     ]));
 
   Widget _row(String k, String v, Color c) => Padding(
-    padding: const EdgeInsets.only(bottom: 4),
-    child: Row(children: [
-      Text('$k: ', style: TextStyle(fontSize: 9, color: cDg.withOpacity(0.8), fontFamily: 'monospace')),
-      Expanded(child: Text(v, style: TextStyle(fontSize: 10, color: c, fontFamily: 'monospace',
+    padding: const EdgeInsets.only(bottom: 5),
+    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      SizedBox(width: 100, child: Text('$k:', style: TextStyle(fontSize: 9,
+        color: cDg.withOpacity(0.7), fontFamily: 'monospace'))),
+      Expanded(child: Text(v, style: TextStyle(fontSize: 10, color: c,
+        fontFamily: 'monospace', fontWeight: FontWeight.w500,
         shadows: [Shadow(color: c.withOpacity(0.4), blurRadius: 4)]),
         overflow: TextOverflow.ellipsis)),
     ]));
 
-  Widget _badge(String t, Color c) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-    decoration: BoxDecoration(color: c.withOpacity(0.1), borderRadius: BorderRadius.circular(2),
-      border: Border.all(color: c.withOpacity(0.3))),
-    child: Text(t, style: TextStyle(fontSize: 9, color: c, fontFamily: 'monospace', fontWeight: FontWeight.bold)));
+  Widget _panelBox(String icon, String label, String val, Color c) => Container(
+    padding: const EdgeInsets.symmetric(vertical: 12),
+    decoration: BoxDecoration(
+      color: c.withOpacity(0.06), borderRadius: BorderRadius.circular(4),
+      border: Border.all(color: c.withOpacity(0.25)),
+      boxShadow: [BoxShadow(color: c.withOpacity(0.08), blurRadius: 8)],
+    ),
+    child: Column(children: [
+      Text(val, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold,
+        color: c, fontFamily: 'monospace',
+        shadows: [Shadow(color: c, blurRadius: 12)])),
+      const SizedBox(height: 2),
+      Text('$icon $label', style: TextStyle(fontSize: 8, color: c.withOpacity(0.7), letterSpacing: 1)),
+    ]));
 
+  Widget _btn(String label, Color c, VoidCallback onTap) => GestureDetector(
+    onTap: onTap,
+    child: Container(
+      width: double.infinity, padding: const EdgeInsets.symmetric(vertical: 11),
+      margin: const EdgeInsets.only(bottom: 4),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(colors: [c.withOpacity(0.06), c.withOpacity(0.12)]),
+        borderRadius: BorderRadius.circular(3),
+        border: Border.all(color: c.withOpacity(0.45)),
+        boxShadow: [BoxShadow(color: c.withOpacity(0.1), blurRadius: 10)]),
+      child: Text(label, textAlign: TextAlign.center,
+        style: TextStyle(fontSize: 11, color: c, fontWeight: FontWeight.bold,
+          letterSpacing: 2, fontFamily: 'monospace',
+          shadows: [Shadow(color: c, blurRadius: 6)]))));
 }
 
 class _MatrixPainter extends CustomPainter {
