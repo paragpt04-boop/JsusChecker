@@ -563,9 +563,12 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
     super.dispose();
   }
 
-  void _showActivation() {
+  void _showActivation() async {
     final ctrl = TextEditingController();
     String msg = '';
+    final prefs = await SharedPreferences.getInstance();
+    final devIdVal = prefs.getString('dev_id') ?? 'Cargando...';
+    if (!mounted) return;
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -586,27 +589,23 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
               child: Column(children: [
                 Text('TU DEVICE ID', style: TextStyle(fontSize: 8, color: cDg, letterSpacing: 2)),
                 const SizedBox(height: 6),
-                FutureBuilder<String>(
-                  future: SharedPreferences.getInstance().then((p) => p.getString('dev_id') ?? ''),
-                  builder: (_, snap) => snap.hasData ? Column(children: [
-                    Text(snap.data!, style: const TextStyle(fontSize: 11, color: cCy,
-                      fontFamily: 'monospace', fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 6),
-                    GestureDetector(
-                      onTap: () {
-                        Clipboard.setData(ClipboardData(text: snap.data!));
-                        Navigator.pop(ctx);
-                        _toast('Device ID copiado');
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: cCy.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(2),
-                          border: Border.all(color: cCy.withOpacity(0.3))),
-                        child: const Text('📋 COPIAR ID', style: TextStyle(fontSize: 9, color: cCy,
-                          fontFamily: 'monospace', fontWeight: FontWeight.bold)))),
-                  ]) : const SizedBox()),
+                SelectableText(devIdVal, style: const TextStyle(fontSize: 11, color: cCy,
+                  fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                GestureDetector(
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: devIdVal));
+                    Navigator.pop(ctx);
+                    _toast('Device ID copiado');
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: cCy.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(2),
+                      border: Border.all(color: cCy.withOpacity(0.3))),
+                    child: const Text('📋 COPIAR ID', style: TextStyle(fontSize: 9, color: cCy,
+                      fontFamily: 'monospace', fontWeight: FontWeight.bold)))),
               ])),
             const SizedBox(height: 12),
             TextField(
