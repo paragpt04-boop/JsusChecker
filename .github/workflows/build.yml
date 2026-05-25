@@ -53,12 +53,7 @@ jobs:
 
       - name: Enable cleartext HTTP
         run: |
-          cp android_config/network_security_config.xml android/app/src/main/res/xml/network_security_config.xml || (mkdir -p android/app/src/main/res/xml && cp android_config/network_security_config.xml android/app/src/main/res/xml/network_security_config.xml)
-          sed -i 's/<application/<application android:usesCleartextTraffic="true" android:networkSecurityConfig="@xml\/network_security_config"/' android/app/src/main/AndroidManifest.xml
-          # Agregar permisos INTERNET y NETWORK
-          sed -i 's/<uses-permission android:name="android.permission.INTERNET"\/>//' android/app/src/main/AndroidManifest.xml
-          sed -i 's/<manifest/<manifest/' android/app/src/main/AndroidManifest.xml
-          sed -i '/<manifest/a\    <uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE"/>\n    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>' android/app/src/main/AndroidManifest.xml
+          python3 fix_manifest.py
 
       - name: Install dependencies
         run: flutter pub get
