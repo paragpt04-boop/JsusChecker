@@ -51,6 +51,10 @@ jobs:
       - name: Set App Name
         run: sed -i 's/android:label="[^"]*"/android:label="JsusChecker"/' android/app/src/main/AndroidManifest.xml
 
+      - name: Enable cleartext HTTP
+        run: |
+          sed -i 's/<application/<application android:usesCleartextTraffic="true"/' android/app/src/main/AndroidManifest.xml
+
       - name: Install dependencies
         run: flutter pub get
 
