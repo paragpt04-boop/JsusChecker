@@ -97,7 +97,7 @@ Future<LicStatus> checkLicense() async {
   final trialEnd = inst.add(const Duration(days: 3));
   var devId = prefs.getString('dev_id') ?? '';
   if (devId.isEmpty) {
-    devId = 'JSUS\${now.millisecondsSinceEpoch.toRadixString(36).toUpperCase()}';
+    devId = 'JSUS' + now.millisecondsSinceEpoch.toRadixString(36).toUpperCase();
     await prefs.setString('dev_id', devId);
   }
   final key = prefs.getString('lic_key') ?? '';
