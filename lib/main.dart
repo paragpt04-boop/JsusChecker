@@ -223,7 +223,7 @@ Future<CheckResult> checkUrl(String raw) async {
       final exp = DateTime.fromMillisecondsSinceEpoch(int.parse(ts.toString()) * 1000);
       final d1 = exp.day.toString().padLeft(2, '0');
       final m1 = exp.month.toString().padLeft(2, '0');
-      r.expira = '\$d1/\$m1/\${exp.year}';
+      r.expira = d1 + "/" + m1 + "/" + exp.year.toString();
       if (exp.isBefore(DateTime.now())) {
         r.status = 'VENCIDA';
         return r;
@@ -234,7 +234,7 @@ Future<CheckResult> checkUrl(String raw) async {
       final cre = DateTime.fromMillisecondsSinceEpoch(int.parse(tc.toString()) * 1000);
       final d2 = cre.day.toString().padLeft(2, '0');
       final m2 = cre.month.toString().padLeft(2, '0');
-      r.creado = '\$d2/\$m2/\${cre.year}';
+      r.creado = d2 + "/" + m2 + "/" + cre.year.toString();
     }
     r.status = 'ACTIVA';
     r.conex = ui['max_connections']?.toString() ?? '?';
