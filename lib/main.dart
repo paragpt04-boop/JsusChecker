@@ -50,50 +50,70 @@ String _ua() => _uas[DateTime.now().millisecondsSinceEpoch % _uas.length];
 // user:pass (needs server separately)
 List<HitEntry> parseHits(String text) {
   final entries = <HitEntry>[];
-  final lines = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n');
-  
-  String? curUser, curPass, curPanel;
-  
-  for (var i = 0; i < lines.length; i++) {
-    final line = lines[i].trim();
-    if (line.isEmpty) {
-      if (curUser != null && curPass != null && curPanel != null) {
-        entries.add(HitEntry(username: curUser, password: curPass, panel: curPanel));
-        curUser = curPass = curPanel = null;
-      }
-      continue;
-    }
-    
-    // Format: USER: xxx
-    if (line.startsWith('USER') && line.contains(':')) {
-      curUser = line.split(':').skip(1).join(':').trim();
-    } else if (line.startsWith('PASS') && line.contains(':')) {
-      curPass = line.split(':').skip(1).join(':').trim();
-    } else if ((line.startsWith('SERVER') || line.startsWith('SRV')) && line.contains(':')) {
-      final val = line.split(':').skip(1).join(':').trim();
-      curPanel = val.startsWith('http') ? val : 'http://$val';
-    }
-    // Format: M3U line with server info
-    else if (line.startsWith('http') && line.contains('get.php') && line.contains('username=')) {
+  final seen = <String>{};
+  final clean = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+
+  // METODO 1: URLs M3U - el mas confiable
+  final lines = clean.split('\n');
+  for (final line in lines) {
+    final l = line.trim();
+    if (l.contains('get.php') && l.contains('username=') && l.contains('password=')) {
       try {
-        final uri = Uri.parse(line);
-        final u = uri.queryParameters['username'] ?? '';
-        final p = uri.queryParameters['password'] ?? '';
-        final panel = '${uri.scheme}://${uri.host}${uri.port != 80 && uri.port != 443 ? ':${uri.port}' : ''}';
-        if (u.isNotEmpty && p.isNotEmpty) {
-          entries.add(HitEntry(username: u, password: p, panel: panel));
+        // Extraer la URL limpia
+        final urlMatch = RegExp(r'https?://\S+').firstMatch(l);
+        if (urlMatch == null) continue;
+        final uri = Uri.parse(urlMatch.group(0)!);
+        final user = Uri.decodeComponent(uri.queryParameters['username'] ?? '');
+        final pass = Uri.decodeComponent(uri.queryParameters['password'] ?? '');
+        if (user.isEmpty || pass.isEmpty) continue;
+        final port = (uri.port != 0 && uri.port != 80 && uri.port != 443) ? ':${uri.port}' : '';
+        final panel = '${uri.scheme}://${uri.host}$port';
+        final key = '$user:$pass:$panel';
+        if (!seen.contains(key)) {
+          seen.add(key);
+          entries.add(HitEntry(username: user, password: pass, panel: panel));
         }
       } catch (_) {}
     }
   }
-  
-  // Last entry
-  if (curUser != null && curPass != null && curPanel != null) {
-    entries.add(HitEntry(username: curUser, password: curPass, panel: curPanel));
+
+  // METODO 2: Bloques con campos USER/PASS/SERVER
+  if (entries.isEmpty) {
+    String? u, p, s;
+    void save() {
+      if (u != null && p != null && s != null) {
+        final key = '$u:$p:$s';
+        if (!seen.contains(key)) {
+          seen.add(key);
+          entries.add(HitEntry(username: u!, password: p!, panel: s!));
+        }
+        u = p = s = null;
+      }
+    }
+    for (final raw in lines) {
+      // Limpiar emojis y decoraciones
+      final line = raw.replaceAll(RegExp(r'[^\x00-\x7F\u00C0-\u024F:./\-_@0-9A-Za-z ]'), ' ').trim();
+      final lower = line.toLowerCase();
+      if (line.isEmpty) { save(); continue; }
+      final colonIdx = line.indexOf(':');
+      if (colonIdx < 0) continue;
+      final key = line.substring(0, colonIdx).trim().toLowerCase();
+      final val = line.substring(colonIdx + 1).trim();
+      if (val.isEmpty) continue;
+      if (key.contains('user') || key.contains('usr')) {
+        if (!val.startsWith('http')) u = val;
+      } else if (key.contains('pass') || key.contains('pwd')) {
+        p = val;
+      } else if (key.contains('server') || key.contains('srv') || key.contains('host')) {
+        s = val.startsWith('http') ? val.replaceAll(RegExp(r'/+\$'), '') : 'http://$val';
+      }
+    }
+    save();
   }
-  
+
   return entries;
 }
+
 
 Future<void> checkEntry(HitEntry e) async {
   try {
