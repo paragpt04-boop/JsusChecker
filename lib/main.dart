@@ -142,7 +142,7 @@ Future<Map<String, dynamic>?> _checkAcc(String panel, String user, String pass) 
     req.headers.set('User-Agent', _ua());
     req.headers.set('Accept', '*/*');
     req.headers.set('Connection', 'keep-alive');
-    final res = await req.close().timeout(const Duration(seconds: 15));
+    final res = await req.close().timeout(const Duration(seconds: 30));
     if (res.statusCode >= 500) return null;
     final body = await res.transform(utf8.decoder).join();
     try {
@@ -161,7 +161,7 @@ Future<int> _cnt(String panel, String user, String pass, String action) async {
     final url = '$panel/player_api.php?username=\${Uri.encodeComponent(user)}&password=\${Uri.encodeComponent(pass)}&action=$action';
     final req = await _client.getUrl(Uri.parse(url));
     req.headers.set('User-Agent', _ua());
-    final res = await req.close().timeout(const Duration(seconds: 15));
+    final res = await req.close().timeout(const Duration(seconds: 30));
     final body = await res.transform(utf8.decoder).join();
     final data = jsonDecode(body);
     if (data is List) return data.length;
