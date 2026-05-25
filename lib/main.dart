@@ -168,7 +168,8 @@ Future<Map<String, dynamic>?> _checkAcc(String panel, String user, String pass) 
 
 Future<int> _cnt(String panel, String user, String pass, String action) async {
   try {
-    final url = '$panel/player_api.php?username=\${Uri.encodeComponent(user)}&password=\${Uri.encodeComponent(pass)}&action=$action';
+  try {
+    final url = panel + '/player_api.php?username=' + Uri.encodeComponent(user) + '&password=' + Uri.encodeComponent(pass) + '&action=' + action;
     final req = await _client.getUrl(Uri.parse(url));
     req.headers.set('User-Agent', _ua());
     final res = await req.close().timeout(const Duration(seconds: 30));
