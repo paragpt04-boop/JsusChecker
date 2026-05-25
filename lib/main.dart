@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() => runApp(const App());
 
@@ -166,6 +167,106 @@ Future<CheckResult> checkUrl(String raw) async {
   return r;
 }
 
+
+// ═══ SISTEMA DE LICENCIAS ═══
+const _licSecret = 'JsusChecker2026_X9K#mP@zQ7_SECRETO';
+
+class License {
+  static Future<LicStatus> check() async {
+    final prefs = await SharedPreferences.getInstance();
+    final now = DateTime.now();
+
+    // Install date
+    if (!prefs.containsKey('inst')) {
+      await prefs.setString('inst', now.toIso8601String());
+    }
+    final inst = DateTime.parse(prefs.getString('inst')!);
+    final trialEnd = inst.add(const Duration(days: 3));
+    final deviceId = await _devId(prefs);
+
+    // Check active license
+    final key = prefs.getString('lic_key') ?? '';
+    if (key.isNotEmpty) {
+      final r = _verify(deviceId, key);
+      if (r.ok) return LicStatus(active: true, msg: r.msg, devId: deviceId);
+      // Key invalid/expired - clear it
+      await prefs.remove('lic_key');
+    }
+
+    // Check trial
+    if (now.isBefore(trialEnd)) {
+      final rem = trialEnd.difference(now);
+      final d = rem.inDays;
+      final h = rem.inHours % 24;
+      final msg = d > 0 ? '$d día${d != 1 ? "s" : ""} de prueba restantes' : '${h}h de prueba restantes';
+      return LicStatus(active: true, trial: true, msg: msg, devId: deviceId);
+    }
+
+    return LicStatus(active: false, msg: 'Prueba de 3 días vencida', devId: deviceId);
+  }
+
+  static Future<String> activate(String key) async {
+    final prefs = await SharedPreferences.getInstance();
+    final devId = await _devId(prefs);
+    final r = _verify(devId, key.trim().toUpperCase());
+    if (r.ok) {
+      await prefs.setString('lic_key', key.trim().toUpperCase());
+      return '✓ ${r.msg}';
+    }
+    return '✗ ${r.msg}';
+  }
+
+  static _VResult _verify(String devId, String key) {
+    try {
+      final parts = key.split('-');
+      if (parts.length != 5 || parts[0] != 'JSUS') return _VResult(false, 'Formato inválido');
+      final exp = parts[4];
+      if (exp.length != 8) return _VResult(false, 'Fecha inválida');
+      final expDate = DateTime(
+        int.parse(exp.substring(0, 4)),
+        int.parse(exp.substring(4, 6)),
+        int.parse(exp.substring(6, 8)));
+      if (expDate.isBefore(DateTime.now())) return _VResult(false, 'Clave vencida');
+
+      // Verify hash
+      final data = '\$devId:\$exp:\$_licSecret';
+      var hash = 5381;
+      for (final ch in data.codeUnits) { hash = ((hash << 5) + hash + ch) & 0xFFFFFFFF; }
+      final hStr = hash.abs().toRadixString(36).toUpperCase().padLeft(15, '0');
+      final expected = 'JSUS-\${hStr.substring(0,5)}-\${hStr.substring(5,10)}-\${hStr.substring(10,15)}-\$exp';
+
+      if (key == expected) {
+        final fmt = '\${expDate.day.toString().padLeft(2,"0")}/\${expDate.month.toString().padLeft(2,"0")}/\${expDate.year}';
+        return _VResult(true, 'Activa hasta \$fmt');
+      }
+      return _VResult(false, 'Clave incorrecta para este dispositivo');
+    } catch (_) {
+      return _VResult(false, 'Clave inválida');
+    }
+  }
+
+  static Future<String> _devId(SharedPreferences prefs) async {
+    var id = prefs.getString('dev_id');
+    if (id != null) return id;
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    id = 'JSUS\${ts.toRadixString(36).toUpperCase()}';
+    await prefs.setString('dev_id', id);
+    return id;
+  }
+}
+
+class LicStatus {
+  final bool active, trial;
+  final String msg, devId;
+  LicStatus({required this.active, this.trial = false, required this.msg, required this.devId});
+}
+
+class _VResult {
+  final bool ok;
+  final String msg;
+  _VResult(this.ok, this.msg);
+}
+
 class App extends StatelessWidget {
   const App({super.key});
   @override
@@ -177,12 +278,243 @@ class App extends StatelessWidget {
       colorScheme: const ColorScheme.dark(primary: cG),
       fontFamily: 'monospace',
     ),
-    home: const HomeScreen(),
+    home: const SplashScreen(),
+  );
+}
+
+
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
+  @override
+  State<SplashScreen> createState() => _SpS();
+}
+
+class _SpS extends State<SplashScreen> with TickerProviderStateMixin {
+  late AnimationController _ac;
+  late Animation<double> _glow;
+
+  @override
+  void initState() {
+    super.initState();
+    _ac = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
+    _glow = Tween<double>(begin: 0.4, end: 1.0).animate(_ac);
+    _init();
+  }
+
+  @override
+  void dispose() { _ac.dispose(); super.dispose(); }
+
+  Future<void> _init() async {
+    await Future.delayed(const Duration(milliseconds: 1200));
+    final status = await License.check();
+    if (!mounted) return;
+    if (status.active) {
+      Navigator.pushReplacement(context, MaterialPageRoute(
+        builder: (_) => HomeScreen(licMsg: status.msg, isTrial: status.trial)));
+    } else {
+      Navigator.pushReplacement(context, MaterialPageRoute(
+        builder: (_) => LicenseScreen(devId: status.devId)));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: cBg,
+    body: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+      AnimatedBuilder(animation: _glow, builder: (_, __) => Container(
+        width: 80, height: 80,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: cG.withOpacity(_glow.value * 0.6), width: 2),
+          boxShadow: [BoxShadow(color: cG.withOpacity(_glow.value * 0.3), blurRadius: 25)]),
+        child: ClipRRect(borderRadius: BorderRadius.circular(16),
+          child: Image.asset('android-icon/icon.png',
+            errorBuilder: (_, __, ___) => const Center(
+              child: Text('✓', style: TextStyle(color: cG, fontSize: 36))))))),
+      const SizedBox(height: 20),
+      AnimatedBuilder(animation: _glow, builder: (_, __) => Text('JsusChecker',
+        style: TextStyle(fontSize: 24, color: cG, fontFamily: 'monospace',
+          fontWeight: FontWeight.bold, letterSpacing: 3,
+          shadows: [Shadow(color: cG.withOpacity(_glow.value), blurRadius: 15)]))),
+      const SizedBox(height: 8),
+      const CircularProgressIndicator(color: cG, strokeWidth: 2),
+    ])),
+  );
+}
+
+class LicenseScreen extends StatefulWidget {
+  final String devId;
+  const LicenseScreen({super.key, required this.devId});
+  @override
+  State<LicenseScreen> createState() => _LicS();
+}
+
+class _LicS extends State<LicenseScreen> with TickerProviderStateMixin {
+  final _keyCtrl = TextEditingController();
+  String _msg = '';
+  bool _loading = false;
+  bool _showId = false;
+  late AnimationController _ac;
+  late Animation<double> _glow;
+
+  @override
+  void initState() {
+    super.initState();
+    _ac = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
+    _glow = Tween<double>(begin: 0.4, end: 1.0).animate(_ac);
+  }
+
+  @override
+  void dispose() { _ac.dispose(); super.dispose(); }
+
+  Future<void> _activate() async {
+    final key = _keyCtrl.text.trim();
+    if (key.isEmpty) { setState(() => _msg = 'Ingresa tu clave'); return; }
+    setState(() { _loading = true; _msg = ''; });
+    final result = await License.activate(key);
+    setState(() { _loading = false; _msg = result; });
+    if (result.startsWith('✓')) {
+      await Future.delayed(const Duration(seconds: 1));
+      if (!mounted) return;
+      Navigator.pushReplacement(context, MaterialPageRoute(
+        builder: (_) => HomeScreen(licMsg: result, isTrial: false)));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: cBg,
+    body: SafeArea(child: SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(children: [
+        const SizedBox(height: 20),
+        AnimatedBuilder(animation: _glow, builder: (_, __) => Container(
+          width: 80, height: 80,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: cRe.withOpacity(0.6), width: 2),
+            boxShadow: [BoxShadow(color: cRe.withOpacity(_glow.value * 0.2), blurRadius: 20)]),
+          child: ClipRRect(borderRadius: BorderRadius.circular(16),
+            child: Image.asset('android-icon/icon.png',
+              errorBuilder: (_, __, ___) => const Center(
+                child: Text('🔒', style: TextStyle(fontSize: 36))))))),
+        const SizedBox(height: 16),
+        Text('JsusChecker', style: const TextStyle(fontSize: 22, color: cG,
+          fontFamily: 'monospace', fontWeight: FontWeight.bold, letterSpacing: 3)),
+        const SizedBox(height: 4),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          decoration: BoxDecoration(
+            color: cRe.withOpacity(0.1), borderRadius: BorderRadius.circular(2),
+            border: Border.all(color: cRe.withOpacity(0.3))),
+          child: const Text('LICENCIA REQUERIDA', style: TextStyle(fontSize: 10, color: cRe,
+            letterSpacing: 3, fontFamily: 'monospace', fontWeight: FontWeight.bold))),
+        const SizedBox(height: 24),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: cBg2.withOpacity(0.9), borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: cBr)),
+          child: Column(children: [
+            Text('Tu período de prueba de 3 días ha vencido.',
+              style: TextStyle(fontSize: 11, color: cDg, fontFamily: 'monospace'),
+              textAlign: TextAlign.center),
+            const SizedBox(height: 4),
+            Text('Contacta al desarrollador para obtener tu clave de activación.',
+              style: TextStyle(fontSize: 10, color: cDg.withOpacity(0.7), fontFamily: 'monospace'),
+              textAlign: TextAlign.center),
+          ])),
+        const SizedBox(height: 16),
+        // Device ID
+        GestureDetector(
+          onTap: () => setState(() => _showId = !_showId),
+          child: Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: cBg2, borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: cCy.withOpacity(0.2))),
+            child: Column(children: [
+              Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Text('MI DEVICE ID ', style: TextStyle(fontSize: 9, color: cDg, letterSpacing: 2)),
+                Text(_showId ? '▲' : '▼', style: const TextStyle(color: cCy, fontSize: 10)),
+              ]),
+              if (_showId) ...[
+                const SizedBox(height: 8),
+                Text(widget.devId, style: const TextStyle(fontSize: 12, color: cCy,
+                  fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: widget.devId));
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                      content: Text('ID copiado', style: TextStyle(color: cG)),
+                      backgroundColor: cBg2, duration: Duration(seconds: 1)));
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: cCy.withOpacity(0.1), borderRadius: BorderRadius.circular(2),
+                      border: Border.all(color: cCy.withOpacity(0.3))),
+                    child: const Text('📋 COPIAR ID', style: TextStyle(fontSize: 10, color: cCy,
+                      fontFamily: 'monospace', fontWeight: FontWeight.bold)))),
+              ],
+            ])),
+        ),
+        const SizedBox(height: 16),
+        // Key input
+        TextField(
+          controller: _keyCtrl,
+          style: const TextStyle(color: cG, fontSize: 12, fontFamily: 'monospace', letterSpacing: 1),
+          textAlign: TextAlign.center,
+          textCapitalization: TextCapitalization.characters,
+          decoration: InputDecoration(
+            hintText: 'JSUS-XXXXX-XXXXX-XXXXX-XXXXXXXX',
+            hintStyle: TextStyle(color: cDg.withOpacity(0.4), fontSize: 10),
+            filled: true, fillColor: Colors.black54,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
+              borderSide: BorderSide(color: cG.withOpacity(0.3))),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
+              borderSide: BorderSide(color: cG.withOpacity(0.3))),
+            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
+              borderSide: const BorderSide(color: cG, width: 1.5)),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14)),
+        ),
+        const SizedBox(height: 10),
+        if (_msg.isNotEmpty) Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: (_msg.startsWith('✓') ? cG : cRe).withOpacity(0.08),
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: (_msg.startsWith('✓') ? cG : cRe).withOpacity(0.3))),
+          child: Text(_msg, style: TextStyle(fontSize: 11,
+            color: _msg.startsWith('✓') ? cG : cRe,
+            fontFamily: 'monospace', fontWeight: FontWeight.bold),
+            textAlign: TextAlign.center)),
+        const SizedBox(height: 10),
+        AnimatedBuilder(animation: _glow, builder: (_, __) => GestureDetector(
+          onTap: _loading ? null : _activate,
+          child: Container(
+            width: double.infinity, padding: const EdgeInsets.symmetric(vertical: 15),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(colors: [cG.withOpacity(0.07), cG.withOpacity(0.15)]),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: cG.withOpacity(0.6), width: 1.5),
+              boxShadow: [BoxShadow(color: cG.withOpacity(_glow.value * 0.3), blurRadius: 20)]),
+            child: _loading
+              ? const Center(child: SizedBox(width: 20, height: 20,
+                  child: CircularProgressIndicator(color: cG, strokeWidth: 2)))
+              : Text('[ ACTIVAR LICENCIA ]', textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 3,
+                  fontFamily: 'monospace', color: cG,
+                  shadows: [Shadow(color: cG.withOpacity(_glow.value), blurRadius: 12)]))))),
+      ])),
   );
 }
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final String licMsg;
+  final bool isTrial;
+  const HomeScreen({super.key, this.licMsg = '', this.isTrial = false});
   @override
   State<HomeScreen> createState() => _HS();
 }
