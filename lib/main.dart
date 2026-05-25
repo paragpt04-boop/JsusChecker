@@ -940,7 +940,7 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
               decoration: BoxDecoration(
                 color: cYe.withOpacity(0.1), borderRadius: BorderRadius.circular(2),
                 border: Border.all(color: cYe.withOpacity(0.3))),
-              child: Text('📅 \${r.expira}', style: const TextStyle(fontSize: 9, color: cYe,
+              child: Text('📅 ' + r.expira, style: const TextStyle(fontSize: 9, color: cYe,
                 fontFamily: 'monospace', fontWeight: FontWeight.bold))),
           ])),
         Padding(
@@ -955,7 +955,7 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
           _sec('ESTADO'),
           if (r.expira.isNotEmpty) _row('VENCIMIENTO', r.expira, r.expira == 'Ilimitado' ? cG : cYe),
           if (r.creado.isNotEmpty) _row('CREADO', r.creado, cDg),
-          if (r.conex.isNotEmpty) _row('CONEXIONES', '\${r.activ}/\${r.conex}', cCy),
+          if (r.conex.isNotEmpty) _row('CONEXIONES', r.activ + '/' + r.conex, cCy),
           if (r.timezone.isNotEmpty) _row('TIMEZONE', r.timezone, cMg),
           if (r.error.isNotEmpty) ...[
             const SizedBox(height: 6),
