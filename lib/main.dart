@@ -136,24 +136,34 @@ class CheckResult {
 }
 
 Future<Map<String, dynamic>?> _checkAcc(String panel, String user, String pass) async {
-  try {
-    final url = '$panel/player_api.php?username=\${Uri.encodeComponent(user)}&password=\${Uri.encodeComponent(pass)}';
-    final req = await _client.getUrl(Uri.parse(url));
-    req.headers.set('User-Agent', _ua());
-    req.headers.set('Accept', '*/*');
-    req.headers.set('Connection', 'keep-alive');
-    final res = await req.close().timeout(const Duration(seconds: 30));
-    if (res.statusCode >= 500) return null;
-    final body = await res.transform(utf8.decoder).join();
+  for (int attempt = 0; attempt < 3; attempt++) {
     try {
-      return jsonDecode(body) as Map<String, dynamic>;
-    } catch (_) {
-      if (body.contains('"auth":1') || body.contains('"status":"Active"')) {
-        return {'user_info': {'auth': 1, 'status': 'Active'}, 'server_info': {}};
+      final url = panel + '/player_api.php?username=' + Uri.encodeComponent(user) + '&password=' + Uri.encodeComponent(pass);
+      final client = HttpClient();
+      client.badCertificateCallback = (_, __, ___) => true;
+      client.connectionTimeout = const Duration(seconds: 10);
+      final req = await client.getUrl(Uri.parse(url));
+      req.headers.set('User-Agent', _ua());
+      req.headers.set('Accept', '*/*');
+      final res = await req.close().timeout(const Duration(seconds: 20));
+      if (res.statusCode >= 500) { client.close(); continue; }
+      final body = await res.transform(utf8.decoder).join();
+      client.close();
+      try {
+        final data = jsonDecode(body);
+        if (data is Map<String, dynamic>) return data;
+      } catch (_) {
+        if (body.contains('"auth":1') || body.contains('"status":"Active"')) {
+          return {'user_info': {'auth': 1, 'status': 'Active'}, 'server_info': {}};
+        }
       }
       return null;
+    } catch (e) {
+      if (attempt == 2) return null;
+      await Future.delayed(const Duration(seconds: 2));
     }
-  } catch (_) { return null; }
+  }
+  return null;
 }
 
 Future<int> _cnt(String panel, String user, String pass, String action) async {
