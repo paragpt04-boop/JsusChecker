@@ -704,7 +704,7 @@ class _HS extends State<HomeScreen> with TickerProviderStateMixin {
     }
   }
 
-  String _fn(int n) => n >= 1000 ? '\${(n/1000).toStringAsFixed(1)}k' : '$n';
+  String _fn(int n) => n >= 1000 ? (n/1000).toStringAsFixed(1) + 'k' : n.toString();
 
   @override
   Widget build(BuildContext context) {
