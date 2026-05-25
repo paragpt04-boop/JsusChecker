@@ -34,6 +34,17 @@ if 'INTERNET' not in manifest:
     )
     print("Added INTERNET permission")
 
+# Add foreground service permission
+if 'FOREGROUND_SERVICE' not in manifest:
+    manifest = manifest.replace(
+        '<uses-permission android:name="android.permission.INTERNET"/>',
+        '<uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>',
+        1
+    )
+    print("Added FOREGROUND_SERVICE")
+
 with open(manifest_path, 'w') as f:
     f.write(manifest)
 print("Manifest fixed!")
