@@ -39,6 +39,8 @@ jobs:
         run: |
           git checkout lib/main.dart
           git checkout pubspec.yaml
+          mkdir -p android/app/src/main/res/xml
+          git checkout android/app/src/main/res/xml/network_security_config.xml
 
       - name: Fix Kotlin duplicate
         run: python3 fix_gradle.py
