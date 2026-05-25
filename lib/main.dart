@@ -175,7 +175,7 @@ Future<CheckResult> checkUrl(String raw) async {
   try {
     final uri = Uri.parse(raw.trim());
     final port = uri.port != 0 ? ':\${uri.port}' : '';
-    r.server = '\${uri.scheme}://\${uri.host}$port';
+    r.server = uri.scheme + '://' + uri.host + port;
     r.streamType = uri.queryParameters['type'] ?? 'm3u_plus';
     r.username = Uri.decodeComponent(uri.queryParameters['username'] ?? '');
     r.password = Uri.decodeComponent(uri.queryParameters['password'] ?? '');
